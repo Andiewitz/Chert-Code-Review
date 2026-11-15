@@ -21,9 +21,11 @@ bun dev --help     # CLI help
 
 Keys inside the TUI:
 
-- `↑` / `↓` (with an empty prompt) — pick a file (the diff pane loads lazily per file)
+- `↑` / `↓` (with an empty prompt) — pick a file in review, or move through the
+  tree; the diff pane loads lazily per file
 - `/` — commands (see below); anything without `/` goes to the agent
-- `Tab` — toggle between the review and the log/transcript view
+- `Tab` — cycle review → tree → log/transcript
+- `Enter` in the tree — open the selected file's diff in the review view
 - `Ctrl+C` — quit (`/quit` also works)
 
 ## The prompt
@@ -39,6 +41,7 @@ in the current project directory (opencode must be installed; no API keys needed
 /run <command>     run a shell command in the current project
 /cd <dir>          switch project directory
 /cwd               show the current project
+/tree              whole project tree (folders, nested files, M/D/?? marks)
 ```
 
 ## Connectors (bring your own model)

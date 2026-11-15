@@ -136,6 +136,18 @@ export function loadPatch(file: ReviewFile): string {
   return run(["diff", "HEAD", "--no-renames", "--no-color", "--", file.path]);
 }
 
+/** Every file git knows about in the working tree: tracked plus untracked
+ * (respects .gitignore). Used by the project tree view. */
+export function listProjectFiles(): string[] {
+  const tracked = run(["ls-files", "-z"])
+    .split("\0")
+    .filter(Boolean);
+  const untracked = run(["ls-files", "--others", "--exclude-standard", "-z"])
+    .split("\0")
+    .filter(Boolean);
+  return Array.from(new Set([...tracked, ...untracked])).sort((a, b) => a.localeCompare(b));
+}
+
 function synthesizedAddedPatch(path: string): string {
   let content = "";
   try {

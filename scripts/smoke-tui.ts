@@ -29,6 +29,9 @@ function assert(condition: boolean, message: string): void {
 async function main(): Promise<void> {
   const originalCwd = process.cwd();
   const tmp = mkdtempSync(join(tmpdir(), "chert-smoke-"));
+  // Connector key storage lives in a separate temp dir: inside the repo it
+  // would show up in the project tree as an untracked directory.
+  const cfgTmp = mkdtempSync(join(tmpdir(), "chert-cfg-"));
   let setup: Awaited<ReturnType<typeof testRender>> | undefined;
   let ok = false;
 
@@ -47,9 +50,8 @@ async function main(): Promise<void> {
     writeFileSync(join(tmp, "src", "untracked-new.ts"), "export const brandNew = true\n");
 
     process.chdir(tmp);
-    // Keep connector key storage inside the temp dir so the test never
-    // touches the real ~/.chert.
-    process.env.CHERT_CONFIG_DIR = join(tmp, "chert-config");
+    // Keep connector key storage hermetic without polluting the repo.
+    process.env.CHERT_CONFIG_DIR = join(cfgTmp, "chert-config");
 
     // Pre-initialize tree-sitter with visible diagnostics.
     const client = getTreeSitterClient();
@@ -140,6 +142,37 @@ async function main(): Promise<void> {
     frame = setup.captureCharFrame();
     assert(frame.includes("[ opencode ]"), "/use opencode switches back");
 
+    // Tab cycles back to the review view first…
+    await setup.mockInput.pressKey("TAB");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("oldThing") && frame.includes("Ctrl+C quit"), "Tab cycles back to the review view");
+
+    // …then into the project tree view.
+    await setup.mockInput.pressKey("TAB");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(
+      frame.includes("└── src/") &&
+        frame.includes("├── deleted.ts  D") &&
+        frame.includes("├── modified.ts  M") &&
+        frame.includes("└── untracked-new.ts  ??"),
+      "tree shows nested folders and files with status marks",
+    );
+
+    // Arrows move the tree selection; Enter opens the file in the review view.
+    await setup.mockInput.pressArrow("down");
+    await setup.renderOnce();
+    await setup.mockInput.pressArrow("down");
+    await setup.renderOnce();
+    await setup.mockInput.pressArrow("down");
+    await setup.renderOnce();
+    await setup.mockInput.pressKey("RETURN");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("addedByTest"), "Enter on a tree file opens its diff");
+    assert(frame.includes("→ src/modified.ts"), "status line shows the opened file");
+
     console.log(frame);
     ok = true;
   } catch (error) {
@@ -148,12 +181,14 @@ async function main(): Promise<void> {
     if (setup) await setup.dispose().catch(() => {});
     process.chdir(originalCwd);
     // Windows can transiently hold handles on freshly used directories.
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        rmSync(tmp, { recursive: true, force: true });
-        break;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 200));
+    for (const dir of [tmp, cfgTmp]) {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
       }
     }
   }

@@ -4,6 +4,8 @@ import { extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption, SelectRenderable } from "@opentui/core"
 import { listChangedFiles, loadPatch } from "../git"
 import type { ReviewFile } from "../git"
+import { buildTreeLines } from "../tree"
+import type { TreeLine } from "../tree"
 import { opencodeAvailable, runAgent, tailLines } from "../agent"
 import {
   PROVIDERS,
@@ -61,6 +63,7 @@ const HELP_TEXT = [
   "  /run <command>               run a shell command in the current project",
   "  /cd <dir>                    switch project directory",
   "  /cwd                         show the current project",
+  "  /tree                        show the whole project tree",
   "  /connect [provider [key]]    connector status / save a provider key",
   "  /disconnect <provider>       remove a saved provider key",
   "  /use <connector> [model]     route plain-text prompts (opencode or a provider)",
@@ -76,7 +79,9 @@ export function ReviewApp() {
   const [loadError, setLoadError] = createSignal<string | null>(null)
   const [selected, setSelected] = createSignal(0)
   const [patch, setPatch] = createSignal("")
-  const [view, setView] = createSignal<"review" | "log">("review")
+  const [treeLines, setTreeLines] = createSignal<TreeLine[]>([])
+  const [treeIndex, setTreeIndex] = createSignal(0)
+  const [view, setView] = createSignal<"review" | "tree" | "log">("review")
   const [transcript, setTranscript] = createSignal<Array<{ kind: EntryKind; text: string }>>([])
   const [status, setStatus] = createSignal("")
   const [cwd, setCwd] = createSignal(process.cwd())
@@ -95,6 +100,7 @@ export function ReviewApp() {
   let selectRef: SelectRenderable | undefined
   let inputRef: InputRenderable | undefined
   let logRef: ScrollBoxRenderable | undefined
+  let treeRef: ScrollBoxRenderable | undefined
 
   const file = createMemo(() => {
     const list = files()
@@ -147,6 +153,15 @@ export function ReviewApp() {
       setLoadError(error instanceof Error ? error.message : String(error))
     }
     selectFile(0)
+    // Rebuild the tree in place when it's on screen (/refresh, /cd).
+    if (view() === "tree") {
+      try {
+        setTreeLines(buildTreeLines(changedGlyphs()))
+        setTreeIndex(0)
+      } catch {
+        // Leave the stale tree; /tree or Tab reloads it.
+      }
+    }
   }
 
   function selectFile(index: number): void {
@@ -175,6 +190,50 @@ export function ReviewApp() {
 
   function navigate(delta: number): void {
     selectFile(selected() + delta)
+  }
+
+  function changedGlyphs(): Map<string, string> {
+    const map = new Map<string, string>()
+    for (const f of files() ?? []) map.set(f.path, STATUS_GLYPH[f.status])
+    return map
+  }
+
+  function loadTree(): void {
+    try {
+      setTreeLines(buildTreeLines(changedGlyphs()))
+      setTreeIndex(0)
+      setView("tree")
+    } catch (error) {
+      addEntry("error", `tree failed: ${error instanceof Error ? error.message : String(error)}`)
+      setView("log")
+    }
+  }
+
+  function moveTreeIndex(delta: number): void {
+    const lines = treeLines()
+    if (lines.length === 0) return
+    const next = Math.max(0, Math.min(treeIndex() + delta, lines.length - 1))
+    if (next === treeIndex()) return
+    setTreeIndex(next)
+    // Keep the selection a few rows inside the viewport on tall trees.
+    treeRef?.scrollTo({ x: 0, y: Math.max(0, next - 10) })
+  }
+
+  function openTreeSelection(): void {
+    const line = treeLines()[treeIndex()]
+    if (line === undefined || line.isDir || line.path === undefined) {
+      setStatus("select a file in the tree")
+      return
+    }
+    const list = files() ?? []
+    const index = list.findIndex((f) => f.path === line.path)
+    if (index === -1) {
+      setStatus(loadError() !== null ? `no diff for ${line.path}` : `unchanged: ${line.path}`)
+      return
+    }
+    setView("review")
+    selectFile(index)
+    setStatus(`→ ${line.path}`)
   }
 
   load()
@@ -314,6 +373,9 @@ export function ReviewApp() {
         addEntry("system", `project: ${cwd()}`)
         setView("log")
         return
+      case "tree":
+        loadTree()
+        return
       case "connect": {
         setView("log")
         if (rest === "") {
@@ -436,18 +498,32 @@ export function ReviewApp() {
   useKeyboard((key) => {
     if (key.name === "return" || key.name === "enter") {
       key.preventDefault()
+      if (view() === "tree" && (inputRef?.value ?? "") === "") {
+        openTreeSelection()
+        return
+      }
       submit()
       return
     }
     if (key.name === "tab") {
       key.preventDefault()
-      setView((v) => (v === "review" ? "log" : "review"))
+      // Cycle: review → tree → log → review.
+      const next = view() === "review" ? "tree" : view() === "tree" ? "log" : "review"
+      if (next === "tree") loadTree()
+      else setView(next)
       return
     }
-    if ((key.name === "up" || key.name === "down") && view() === "review" && (inputRef?.value ?? "") === "") {
-      key.preventDefault()
-      navigate(key.name === "up" ? -1 : 1)
-      return
+    if ((key.name === "up" || key.name === "down") && (inputRef?.value ?? "") === "") {
+      if (view() === "tree") {
+        key.preventDefault()
+        moveTreeIndex(key.name === "up" ? -1 : 1)
+        return
+      }
+      if (view() === "review") {
+        key.preventDefault()
+        navigate(key.name === "up" ? -1 : 1)
+        return
+      }
     }
     if (key.name === "escape" && (inputRef?.value ?? "") !== "") {
       clearInput()
@@ -495,44 +571,64 @@ export function ReviewApp() {
       <Show
         when={view() === "log"}
         fallback={
-          <box flexGrow={1} flexDirection="row">
-            <select
-              ref={(el: SelectRenderable) => {
-                selectRef = el
-              }}
-              width="38%"
-              height="100%"
-              options={options()}
-              showDescription={true}
-              showScrollIndicator={true}
-              backgroundColor={COLORS.bg}
-              focusedBackgroundColor={COLORS.bg}
-              textColor={COLORS.text}
-              focusedTextColor={COLORS.bright}
-              selectedBackgroundColor={COLORS.selectedBg}
-              selectedTextColor={COLORS.bright}
-              descriptionColor={COLORS.dim}
-              selectedDescriptionColor={COLORS.dim}
-            />
+          <Show
+            when={view() === "tree"}
+            fallback={
+              <box flexGrow={1} flexDirection="row">
+                <select
+                  ref={(el: SelectRenderable) => {
+                    selectRef = el
+                  }}
+                  width="38%"
+                  height="100%"
+                  options={options()}
+                  showDescription={true}
+                  showScrollIndicator={true}
+                  backgroundColor={COLORS.bg}
+                  focusedBackgroundColor={COLORS.bg}
+                  textColor={COLORS.text}
+                  focusedTextColor={COLORS.bright}
+                  selectedBackgroundColor={COLORS.selectedBg}
+                  selectedTextColor={COLORS.bright}
+                  descriptionColor={COLORS.dim}
+                  selectedDescriptionColor={COLORS.dim}
+                />
 
-            <box flexGrow={1} height="100%" paddingLeft={1}>
-              <Show when={!loadError()} fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}>
-                <Show
-                  when={file()}
-                  fallback={<text fg={COLORS.dim}>{` ${files() === null ? "Loading changes…" : "No local changes"}`}</text>}
-                >
-                  <diff
-                    width="100%"
-                    height="100%"
-                    diff={patch()}
-                    view="unified"
-                    filetype={filetype()}
-                    showLineNumbers={true}
-                  />
-                </Show>
-              </Show>
-            </box>
-          </box>
+                <box flexGrow={1} height="100%" paddingLeft={1}>
+                  <Show when={!loadError()} fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}>
+                    <Show
+                      when={file()}
+                      fallback={<text fg={COLORS.dim}>{` ${files() === null ? "Loading changes…" : "No local changes"}`}</text>}
+                    >
+                      <diff
+                        width="100%"
+                        height="100%"
+                        diff={patch()}
+                        view="unified"
+                        filetype={filetype()}
+                        showLineNumbers={true}
+                      />
+                    </Show>
+                  </Show>
+                </box>
+              </box>
+            }
+          >
+            <scrollbox
+              ref={(el: ScrollBoxRenderable) => (treeRef = el)}
+              flexGrow={1}
+              backgroundColor={COLORS.bg}
+              paddingLeft={1}
+            >
+              <For each={treeLines()}>
+                {(line, index) => (
+                  <text fg={index() === treeIndex() ? COLORS.bright : line.isDir ? COLORS.dim : COLORS.text}>
+                    {`${index() === treeIndex() ? "▸ " : "  "}${line.text}`}
+                  </text>
+                )}
+              </For>
+            </scrollbox>
+          </Show>
         }
       >
         <scrollbox
@@ -572,7 +668,7 @@ export function ReviewApp() {
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={COLORS.dim}>{"↑↓ select · / commands · Tab review/log · Ctrl+C quit"}</text>
+        <text fg={COLORS.dim}>{"↑↓ select · / commands · Tab review/tree/log · Ctrl+C quit"}</text>
         <box flexGrow={1} />
         <Show when={status() !== ""}>
           <text fg={COLORS.dim}>{status()}</text>
