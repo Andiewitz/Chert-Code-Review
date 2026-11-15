@@ -1,7 +1,8 @@
 // Headless end-to-end smoke test:
 //   1. seeds a temp git repo (base commit, then modify/delete/untrack files)
 //   2. mounts the review TUI in memory against that repo
-//   3. drives it with mock keyboard input and asserts rendered frames
+//   3. drives the prompt and navigation with mock keyboard input, asserting
+//      rendered frames at each step
 // Run with: bun run scripts/smoke-tui.ts
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,30 +59,54 @@ async function main(): Promise<void> {
     const { testRender: render } = await import("@opentui/solid");
     const { ReviewApp } = await import("../src/tui/app.tsx");
 
-    setup = await render(ReviewApp, { width: 100, height: 26 });
+    setup = await render(ReviewApp, { width: 100, height: 30 });
     await setup.renderOnce();
 
-    // Sorted list: deleted.ts, modified.ts, untracked-new.ts.
-    // The deleted file is selected first; its patch should render.
     let frame = setup.captureCharFrame();
-    assert(frame.includes("deleted.ts") && frame.includes("modified.ts") && frame.includes("untracked-new.ts"),
-      "file list shows all changed files");
+    assert(
+      frame.includes("deleted.ts") && frame.includes("modified.ts") && frame.includes("untracked-new.ts"),
+      "file list shows all changed files",
+    );
     assert(frame.includes("oldThing"), "initial diff shows the deleted file patch");
+    assert(frame.includes("> "), "prompt row is present");
 
+    // The prompt input owns focus; an empty prompt lets arrows through to the
+    // file list via the global key handler.
     await setup.mockInput.pressArrow("down");
     await setup.renderOnce();
     frame = setup.captureCharFrame();
     assert(frame.includes("addedByTest"), "arrow-down loads the modified file patch");
 
-    await setup.mockInput.pressArrow("down");
+    // /open <query> jumps to a file.
+    await setup.mockInput.pressKeys("/open untracked".split(""));
     await setup.renderOnce();
     frame = setup.captureCharFrame();
-    assert(frame.includes("brandNew"), "arrow-down loads the synthesized untracked patch");
+    assert(frame.includes("/open untracked"), "typed command is echoed in the prompt");
+    await setup.mockInput.pressKey("RETURN");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("brandNew"), "/open jumps to the matching file");
+    assert(!frame.includes("/open"), "prompt is cleared after submit");
 
-    await setup.mockInput.pressKey("r");
+    // /run executes a shell command and shows output in the log view.
+    await setup.mockInput.pressKeys("/run echo chert-e2e-ok".split(""));
+    await setup.mockInput.pressKey("RETURN");
     await setup.renderOnce();
     frame = setup.captureCharFrame();
-    assert(frame.includes("oldThing") && frame.includes("untracked-new.ts"), "refresh reloads all files, first file selected again");
+    assert(frame.includes("chert-e2e-ok"), "/run output appears in the log view");
+
+    // /refresh rescans and reports the count.
+    await setup.mockInput.pressKeys("/refresh".split(""));
+    await setup.mockInput.pressKey("RETURN");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("refreshed 3 files"), "/refresh reports the file count");
+
+    // Tab returns to the review view; refresh reset selection to the first file.
+    await setup.mockInput.pressKey("TAB");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("oldThing") && frame.includes("Ctrl+C quit"), "Tab returns to the review view");
 
     console.log(frame);
     ok = true;
