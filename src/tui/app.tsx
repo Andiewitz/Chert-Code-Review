@@ -9,22 +9,23 @@ import type { ReviewFile } from "../git"
 // UI
 // ---------------------------------------------------------------------------
 
+// Black, monochrome, git-native: plain terminal look, no decorative chrome.
 const COLORS = {
-  bg: "#0f1319",
-  border: "#263241",
-  dim: "#475569",
-  text: "#94a3b8",
-  bright: "#e2e8f0",
-  accent: "#67e8f9",
-  selectedBg: "#1c2a3a",
-  danger: "#f87171",
+  bg: "#000000",
+  rule: "#333333",
+  dim: "#6b6b6b",
+  text: "#b8b8b8",
+  bright: "#ffffff",
+  selectedBg: "#1a1a1a",
+  danger: "#cc6666",
 }
 
+// git status --short style markers.
 const STATUS_GLYPH: Record<ReviewFile["status"], string> = {
-  added: "+",
-  modified: "~",
-  deleted: "-",
-  untracked: "+",
+  added: "A",
+  modified: "M",
+  deleted: "D",
+  untracked: "??",
 }
 
 export function ReviewApp() {
@@ -91,8 +92,8 @@ export function ReviewApp() {
 
   const options = createMemo<SelectOption[]>(() =>
     (files() ?? []).map((f, index) => ({
-      name: `${STATUS_GLYPH[f.status]} ${f.path}`,
-      description: `${f.status}  +${f.additions} -${f.deletions}`,
+      name: `${STATUS_GLYPH[f.status].padEnd(2)} ${f.path}`,
+      description: `+${f.additions} -${f.deletions}`,
       value: index,
     })),
   )
@@ -112,37 +113,39 @@ export function ReviewApp() {
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
-        <text fg={COLORS.accent}>chert</text>
+        <text fg={COLORS.bright}>chert</text>
         <text fg={COLORS.dim}>{` review  ${headerInfo()}`}</text>
       </box>
 
-      <box flexGrow={1} flexDirection="row">
-        <box width="40%" border borderStyle="rounded" borderColor={COLORS.border} title="files" titleColor={COLORS.dim}>
-          <select
-            ref={(el: SelectRenderable) => {
-              selectRef = el
-              // `focused` JSX prop is not wired up in OpenTUI; focus the
-              // renderable directly so it receives keyboard input. The ref
-              // callback runs synchronously at element creation, which also
-              // works under headless test renderers where effects are starved.
-              el.focus()
-            }}
-            width="100%"
-            height="100%"
-            options={options()}
-            showDescription={true}
-            showScrollIndicator={true}
-            onChange={(index) => selectFile(index)}
-            backgroundColor={COLORS.bg}
-            textColor={COLORS.text}
-            selectedTextColor={COLORS.bright}
-            selectedBackgroundColor={COLORS.selectedBg}
-            descriptionColor={COLORS.dim}
-            selectedDescriptionColor={COLORS.text}
-          />
-        </box>
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
 
-        <box flexGrow={1} border borderStyle="rounded" borderColor={COLORS.border} title={file()?.path ?? "diff"} titleColor={COLORS.dim}>
+      <box flexGrow={1} flexDirection="row">
+        <select
+          ref={(el: SelectRenderable) => {
+            selectRef = el
+            // `focused` JSX prop is not wired up in OpenTUI; focus the
+            // renderable directly so it receives keyboard input. The ref
+            // callback runs synchronously at element creation, which also
+            // works under headless test renderers where effects are starved.
+            el.focus()
+          }}
+          width="38%"
+          height="100%"
+          options={options()}
+          showDescription={true}
+          showScrollIndicator={true}
+          onChange={(index) => selectFile(index)}
+          backgroundColor={COLORS.bg}
+          focusedBackgroundColor={COLORS.bg}
+          textColor={COLORS.text}
+          focusedTextColor={COLORS.bright}
+          selectedBackgroundColor={COLORS.selectedBg}
+          selectedTextColor={COLORS.bright}
+          descriptionColor={COLORS.dim}
+          selectedDescriptionColor={COLORS.dim}
+        />
+
+        <box flexGrow={1} height="100%" paddingLeft={1}>
           <Show
             when={!loadError()}
             fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}
@@ -165,7 +168,7 @@ export function ReviewApp() {
       </box>
 
       <box height={1} flexShrink={0} paddingLeft={1}>
-        <text fg={COLORS.dim}>{` up/down select file  ·  r refresh  ·  q quit`}</text>
+        <text fg={COLORS.dim}>{` up/down select  ·  r refresh  ·  q quit`}</text>
       </box>
     </box>
   )
