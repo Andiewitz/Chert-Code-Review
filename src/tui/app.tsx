@@ -1,97 +1,9 @@
-import { createSignal } from "solid-js"
+import { createMemo, createSignal, Show } from "solid-js"
 import { render, useKeyboard, useRenderer } from "@opentui/solid"
-import { getTreeSitterClient } from "@opentui/core"
-import type { SelectOption } from "@opentui/core"
-
-// ---------------------------------------------------------------------------
-// Placeholder review data — replace with the real source (git diff, PR, etc.)
-// ---------------------------------------------------------------------------
-
-type FileStatus = "added" | "modified" | "deleted"
-
-interface ReviewFile {
-  path: string
-  status: FileStatus
-  additions: number
-  deletions: number
-  filetype: string
-  patch: string
-}
-
-const STATUS_GLYPH: Record<FileStatus, string> = {
-  added: "+",
-  modified: "~",
-  deleted: "-",
-}
-
-const FILES: ReviewFile[] = [
-  {
-    path: "src/index.ts",
-    status: "modified",
-    additions: 6,
-    deletions: 3,
-    filetype: "typescript",
-    patch: `diff --git a/src/index.ts b/src/index.ts
-index 1a2b3c4..5d6e7f8 100644
---- a/src/index.ts
-+++ b/src/index.ts
-@@ -1,6 +1,11 @@
- #!/usr/bin/env bun
--import { run } from "./runner"
-+import { run } from "./runner"
-+import { review } from "./review"
- 
--export function main() {
--  run()
-+export function main(args: string[]) {
-+  if (args.length === 0) {
-+    review()
-+    return
-+  }
-+  run(args)
- }
-`,
-  },
-  {
-    path: "src/review.ts",
-    status: "added",
-    additions: 7,
-    deletions: 0,
-    filetype: "typescript",
-    patch: `diff --git a/src/review.ts b/src/review.ts
-new file mode 100644
-index 0000000..9c8d7e6
---- /dev/null
-+++ b/src/review.ts
-@@ -0,0 +1,7 @@
-+import type { ReviewFile } from "./types"
-+
-+export function review() {
-+  for (const file of listFiles()) {
-+    show(file)
-+  }
-+}
-`,
-  },
-  {
-    path: "src/legacy.ts",
-    status: "deleted",
-    additions: 0,
-    deletions: 4,
-    filetype: "typescript",
-    patch: `diff --git a/src/legacy.ts b/src/legacy.ts
-deleted file mode 100644
-index abc1234..0000000
---- a/src/legacy.ts
-+++ /dev/null
-@@ -1,4 +0,0 @@
--// Legacy bootstrapping, superseded by review.ts
--export function boot() {
--  runLegacy()
--}
-`,
-  },
-]
+import { extToFiletype, getTreeSitterClient } from "@opentui/core"
+import type { SelectOption, SelectRenderable } from "@opentui/core"
+import { listChangedFiles, loadPatch } from "../git"
+import type { ReviewFile } from "../git"
 
 // ---------------------------------------------------------------------------
 // UI
@@ -105,43 +17,122 @@ const COLORS = {
   bright: "#e2e8f0",
   accent: "#67e8f9",
   selectedBg: "#1c2a3a",
+  danger: "#f87171",
+}
+
+const STATUS_GLYPH: Record<ReviewFile["status"], string> = {
+  added: "+",
+  modified: "~",
+  deleted: "-",
+  untracked: "+",
 }
 
 export function ReviewApp() {
   const renderer = useRenderer()
+  const [files, setFiles] = createSignal<ReviewFile[] | null>(null)
+  const [loadError, setLoadError] = createSignal<string | null>(null)
   const [selected, setSelected] = createSignal(0)
-  const file = () => FILES[Math.min(selected(), FILES.length - 1)]
+  const [patch, setPatch] = createSignal("")
+
+  const patchCache = new Map<string, string>()
+  let selectRef: SelectRenderable | undefined
+  const file = createMemo(() => {
+    const list = files()
+    if (!list || list.length === 0) return undefined
+    return list[Math.min(selected(), list.length - 1)]
+  })
+
+  // Synchronous loads: git is fast, and sync state updates render
+  // deterministically regardless of the host renderer's event loop.
+  function load(): void {
+    setFiles(null)
+    setLoadError(null)
+    setPatch("")
+    patchCache.clear()
+    setSelected(0)
+    try {
+      setFiles(listChangedFiles())
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error))
+    }
+    selectFile(selected())
+  }
+
+  load()
+
+  function selectFile(index: number): void {
+    setSelected(index)
+    const current = file()
+    if (!current) return
+    const cached = patchCache.get(current.path)
+    if (cached !== undefined) {
+      setPatch(cached)
+      return
+    }
+    try {
+      const result = loadPatch(current)
+      patchCache.set(current.path, result)
+      setPatch(result)
+    } catch (error) {
+      setPatch(`Error loading diff for ${current.path}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 
   useKeyboard((key) => {
     if (key.name === "q" || key.name === "escape") {
       renderer.destroy()
       process.exit(0)
     }
+    if (key.name === "r") {
+      load()
+      selectFile(selected())
+    }
   })
 
-  const options: SelectOption[] = FILES.map((f, index) => ({
-    name: `${STATUS_GLYPH[f.status]} ${f.path}`,
-    description: `${f.status}  +${f.additions} -${f.deletions}`,
-    value: index,
-  }))
+  const options = createMemo<SelectOption[]>(() =>
+    (files() ?? []).map((f, index) => ({
+      name: `${STATUS_GLYPH[f.status]} ${f.path}`,
+      description: `${f.status}  +${f.additions} -${f.deletions}`,
+      value: index,
+    })),
+  )
+
+  const headerInfo = createMemo(() => {
+    const list = files()
+    if (list === null) return "loading…"
+    if (loadError()) return "error"
+    return `${list.length} files`
+  })
+
+  const filetype = createMemo(() => {
+    const path = file()?.path ?? ""
+    return path === "" ? "" : extToFiletype(path.includes(".") ? path.slice(path.lastIndexOf(".")) : path)
+  })
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
         <text fg={COLORS.accent}>chert</text>
-        <text fg={COLORS.dim}>{` review  ${FILES.length} files`}</text>
+        <text fg={COLORS.dim}>{` review  ${headerInfo()}`}</text>
       </box>
 
       <box flexGrow={1} flexDirection="row">
         <box width="40%" border borderStyle="rounded" borderColor={COLORS.border} title="files" titleColor={COLORS.dim}>
           <select
-            focused
+            ref={(el: SelectRenderable) => {
+              selectRef = el
+              // `focused` JSX prop is not wired up in OpenTUI; focus the
+              // renderable directly so it receives keyboard input. The ref
+              // callback runs synchronously at element creation, which also
+              // works under headless test renderers where effects are starved.
+              el.focus()
+            }}
             width="100%"
             height="100%"
-            options={options}
+            options={options()}
             showDescription={true}
             showScrollIndicator={true}
-            onChange={(index) => setSelected(index)}
+            onChange={(index) => selectFile(index)}
             backgroundColor={COLORS.bg}
             textColor={COLORS.text}
             selectedTextColor={COLORS.bright}
@@ -151,28 +142,39 @@ export function ReviewApp() {
           />
         </box>
 
-        <box flexGrow={1} border borderStyle="rounded" borderColor={COLORS.border} title={file().path} titleColor={COLORS.dim}>
-          <diff
-            width="100%"
-            height="100%"
-            diff={file().patch}
-            view="unified"
-            filetype={file().filetype}
-            showLineNumbers={true}
-          />
+        <box flexGrow={1} border borderStyle="rounded" borderColor={COLORS.border} title={file()?.path ?? "diff"} titleColor={COLORS.dim}>
+          <Show
+            when={!loadError()}
+            fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}
+          >
+            <Show
+              when={file()}
+              fallback={<text fg={COLORS.dim}>{` ${files() === null ? "Loading changes…" : "No local changes"}`}</text>}
+            >
+              <diff
+                width="100%"
+                height="100%"
+                diff={patch()}
+                view="unified"
+                filetype={filetype()}
+                showLineNumbers={true}
+              />
+            </Show>
+          </Show>
         </box>
       </box>
 
       <box height={1} flexShrink={0} paddingLeft={1}>
-        <text fg={COLORS.dim}>{` up/down select file  ·  q quit`}</text>
+        <text fg={COLORS.dim}>{` up/down select file  ·  r refresh  ·  q quit`}</text>
       </box>
     </box>
   )
 }
 
 export async function launch(): Promise<void> {
-  // Initialize the tree-sitter client up front so the diff pane highlights on
-  // the first frame. Failure is non-fatal: renderables fall back to plain text.
-  await getTreeSitterClient().initialize().catch(() => {});
+  // Initialize the tree-sitter client up front (before the render loop takes
+  // over) so the diff pane can highlight. Failure is non-fatal: renderables
+  // fall back to plain text.
+  await getTreeSitterClient().initialize().catch(() => {})
   await render(() => <ReviewApp />, { exitOnCtrlC: true })
 }
