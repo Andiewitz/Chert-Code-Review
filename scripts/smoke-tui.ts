@@ -47,6 +47,9 @@ async function main(): Promise<void> {
     writeFileSync(join(tmp, "src", "untracked-new.ts"), "export const brandNew = true\n");
 
     process.chdir(tmp);
+    // Keep connector key storage inside the temp dir so the test never
+    // touches the real ~/.chert.
+    process.env.CHERT_CONFIG_DIR = join(tmp, "chert-config");
 
     // Pre-initialize tree-sitter with visible diagnostics.
     const client = getTreeSitterClient();
@@ -107,6 +110,35 @@ async function main(): Promise<void> {
     await setup.renderOnce();
     frame = setup.captureCharFrame();
     assert(frame.includes("oldThing") && frame.includes("Ctrl+C quit"), "Tab returns to the review view");
+
+    // /connect lists every connector with key state.
+    await setup.mockInput.pressKeys("/connect".split(""));
+    await setup.mockInput.pressKey("RETURN");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("connectors:") && frame.includes("opencode"), "/connect lists connectors");
+    assert(frame.includes("Groq") && frame.includes("NVIDIA NIM"), "/connect lists all providers");
+
+    // /connect <provider> <key> saves the key to the (redirected) config.
+    await setup.mockInput.pressKeys("/connect groq gsk-smoke-key".split(""));
+    await setup.mockInput.pressKey("RETURN");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("saved Groq key"), "/connect <provider> <key> saves the key");
+
+    // /use routes plain-text prompts to a provider; the header reflects it.
+    await setup.mockInput.pressKeys("/use groq".split(""));
+    await setup.mockInput.pressKey("RETURN");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("[ groq/llama-3.3-70b-versatile ]"), "/use switches the active connector");
+
+    // ...and back to the opencode CLI.
+    await setup.mockInput.pressKeys("/use opencode".split(""));
+    await setup.mockInput.pressKey("RETURN");
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    assert(frame.includes("[ opencode ]"), "/use opencode switches back");
 
     console.log(frame);
     ok = true;

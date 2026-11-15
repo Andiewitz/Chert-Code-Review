@@ -41,6 +41,26 @@ in the current project directory (opencode must be installed; no API keys needed
 /cwd               show the current project
 ```
 
+## Connectors (bring your own model)
+
+Plain-text prompts go to the opencode agent by default. `/connect` adds direct
+provider support — all four use OpenAI-compatible APIs:
+
+| provider | id | key env var | default model |
+|---|---|---|---|
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
+| Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| NVIDIA NIM | `nim` (alias `nvidia`) | `NVIDIA_API_KEY` | `meta/llama-3.3-70b-instruct` |
+
+- `/connect` — status of every connector (key source, model, active)
+- `/connect <id> <key>` — save a key to `~/.chert/connectors.json` (chmod 600),
+  or just export the env var
+- `/use <id> [model]` — route plain-text prompts to a provider; `/use opencode`
+  switches back to the local CLI
+- `/models <id>` — list a provider's models
+- `/disconnect <id>` — remove a saved key
+
 ## Build a standalone executable
 
 ```sh

@@ -5,6 +5,18 @@ import type { InputRenderable, ScrollBoxRenderable, SelectOption, SelectRenderab
 import { listChangedFiles, loadPatch } from "../git"
 import type { ReviewFile } from "../git"
 import { opencodeAvailable, runAgent, tailLines } from "../agent"
+import {
+  PROVIDERS,
+  chatCompletion,
+  clearProviderKey,
+  findProvider,
+  getActive,
+  keySource,
+  listModels,
+  resolveKey,
+  saveProviderKey,
+  setActive,
+} from "../connectors"
 
 // ---------------------------------------------------------------------------
 // UI
@@ -43,14 +55,19 @@ const ENTRY_FG: Record<EntryKind, string> = {
 
 const HELP_TEXT = [
   "commands:",
-  "  /help              show this list",
-  "  /refresh           re-scan the working tree",
-  "  /open <query>      jump to a file (path match)",
-  "  /run <command>     run a shell command in the current project",
-  "  /cd <dir>          switch project directory",
-  "  /cwd               show the current project",
-  "  /quit              exit chert (Ctrl+C also works)",
-  "plain text (no /) is sent to the opencode agent.",
+  "  /help                        show this list",
+  "  /refresh                     re-scan the working tree",
+  "  /open <query>                jump to a file (path match)",
+  "  /run <command>               run a shell command in the current project",
+  "  /cd <dir>                    switch project directory",
+  "  /cwd                         show the current project",
+  "  /connect [provider [key]]    connector status / save a provider key",
+  "  /disconnect <provider>       remove a saved provider key",
+  "  /use <connector> [model]     route plain-text prompts (opencode or a provider)",
+  "  /models [provider]           list a provider's models",
+  "  /quit                        exit chert (Ctrl+C also works)",
+  "connectors: opencode (default) · openrouter · gemini · groq · nim",
+  "plain text (no /) goes to the active connector.",
 ].join("\n")
 
 export function ReviewApp() {
@@ -63,6 +80,15 @@ export function ReviewApp() {
   const [transcript, setTranscript] = createSignal<Array<{ kind: EntryKind; text: string }>>([])
   const [status, setStatus] = createSignal("")
   const [cwd, setCwd] = createSignal(process.cwd())
+  const [connector, setConnector] = createSignal(getActive().connector)
+  const [model, setModel] = createSignal<string | undefined>(getActive().model)
+
+  const activeLabel = createMemo(() => {
+    const active = connector()
+    if (active === "opencode") return "opencode"
+    const provider = findProvider(active)
+    return provider ? `${provider.id}/${model() ?? provider.defaultModel}` : active
+  })
 
   const patchCache = new Map<string, string>()
   let patchFor = ""
@@ -79,6 +105,23 @@ export function ReviewApp() {
   function cwdBase(): string {
     const parts = cwd().split(/[\\/]/)
     return parts[parts.length - 1] || cwd()
+  }
+
+  function connectorsStatus(): string {
+    const lines = [
+      "connectors:",
+      `  opencode     ${connector() === "opencode" ? "← active" : ""}  local opencode CLI (no key needed)`,
+    ]
+    for (const provider of PROVIDERS) {
+      const source = keySource(provider.id)
+      const isActive = connector() === provider.id
+      const useModel = isActive ? model() ?? provider.defaultModel : provider.defaultModel
+      lines.push(
+        `  ${provider.id.padEnd(12)} ${source === undefined ? "✗ no key" : `✓ key: ${source}`}   ${provider.label} · ${useModel}${isActive ? "  ← active" : ""}`,
+      )
+    }
+    lines.push("save a key: /connect <provider> <key>   ·   switch: /use <connector> [model]")
+    return lines.join("\n")
   }
 
   function addEntry(kind: EntryKind, text: string): void {
@@ -150,14 +193,40 @@ export function ReviewApp() {
   async function askAgent(prompt: string): Promise<void> {
     addEntry("user", prompt)
     setView("log")
-    if (!opencodeAvailable()) {
-      addEntry("error", "opencode CLI not found — install it (https://opencode.ai) to chat with the agent")
+    const active = connector()
+    if (active === "opencode") {
+      if (!opencodeAvailable()) {
+        addEntry("error", "opencode CLI not found — install it (https://opencode.ai) or /connect a provider (openrouter, gemini, groq, nim)")
+        setStatus("")
+        return
+      }
+      setStatus("agent: thinking…")
+      try {
+        addEntry("agent", await runAgent(prompt, cwd()))
+        setStatus("")
+      } catch (error) {
+        addEntry("error", error instanceof Error ? error.message : String(error))
+        setStatus("agent: failed")
+      }
+      return
+    }
+    const provider = findProvider(active)
+    if (!provider) {
+      addEntry("error", `unknown connector "${active}"`)
       setStatus("")
       return
     }
-    setStatus("agent: thinking…")
+    const key = resolveKey(provider.id)
+    if (key === undefined) {
+      addEntry("error", `no API key for ${provider.label} — /connect ${provider.id} <key> or set ${provider.envKeys[0]}`)
+      setStatus("")
+      return
+    }
+    const useModel = model() ?? provider.defaultModel
+    setStatus(`${provider.id} ${useModel}: thinking…`)
+    const system = `You are chert's code-review assistant. Current project directory: ${cwd()}. Locally changed files: ${(files() ?? []).map((f) => f.path).join(", ") || "none"}.`
     try {
-      addEntry("agent", await runAgent(prompt, cwd()))
+      addEntry("agent", await chatCompletion(provider, key, useModel, system, prompt))
       setStatus("")
     } catch (error) {
       addEntry("error", error instanceof Error ? error.message : String(error))
@@ -245,6 +314,110 @@ export function ReviewApp() {
         addEntry("system", `project: ${cwd()}`)
         setView("log")
         return
+      case "connect": {
+        setView("log")
+        if (rest === "") {
+          addEntry("system", connectorsStatus())
+          return
+        }
+        const [providerToken, ...keyParts] = rest.split(/\s+/)
+        const provider = findProvider(providerToken)
+        if (!provider) {
+          addEntry("error", `unknown provider "${providerToken}" — providers: ${PROVIDERS.map((p) => p.id).join(", ")}`)
+          return
+        }
+        const key = keyParts.join(" ").trim()
+        if (key === "") {
+          const source = keySource(provider.id)
+          addEntry(
+            "system",
+            [
+              `${provider.label} (${provider.id})`,
+              `  key: ${source === "saved" ? "saved" : source === "env" ? `env (${provider.envKeys.join(" or ")})` : "not configured"}`,
+              `  default model: ${provider.defaultModel}`,
+              `  get a key: ${provider.keyUrl}`,
+              `  save it: /connect ${provider.id} <key>`,
+            ].join("\n"),
+          )
+          return
+        }
+        try {
+          saveProviderKey(provider.id, key)
+          addEntry("system", `saved ${provider.label} key`)
+          setStatus(`✓ ${provider.id} connected`)
+        } catch (error) {
+          addEntry("error", error instanceof Error ? error.message : String(error))
+        }
+        return
+      }
+      case "disconnect": {
+        setView("log")
+        const provider = findProvider(rest.trim())
+        if (!provider) {
+          addEntry("error", `unknown provider "${rest}" — providers: ${PROVIDERS.map((p) => p.id).join(", ")}`)
+          return
+        }
+        try {
+          clearProviderKey(provider.id)
+          addEntry("system", `cleared saved key for ${provider.label} (env vars still apply)`)
+          setStatus("")
+        } catch (error) {
+          addEntry("error", error instanceof Error ? error.message : String(error))
+        }
+        return
+      }
+      case "use": {
+        const [id, ...modelParts] = rest.split(/\s+/)
+        if (id === "" || id === "opencode") {
+          setConnector("opencode")
+          setModel(undefined)
+          setActive("opencode")
+          setStatus("connector: opencode")
+          return
+        }
+        setView("log")
+        const provider = findProvider(id)
+        if (!provider) {
+          addEntry("error", `unknown connector "${id}" — connectors: opencode, ${PROVIDERS.map((p) => p.id).join(", ")}`)
+          return
+        }
+        if (resolveKey(provider.id) === undefined) {
+          addEntry("error", `no API key for ${provider.label} — /connect ${provider.id} <key> first`)
+          return
+        }
+        const newModel = modelParts.join(" ").trim()
+        setConnector(provider.id)
+        setModel(newModel === "" ? undefined : newModel)
+        setActive(provider.id, newModel === "" ? undefined : newModel)
+        setStatus(`connector: ${activeLabel()}`)
+        return
+      }
+      case "models": {
+        const provider = findProvider(rest.trim()) ?? (connector() !== "opencode" ? findProvider(connector()) : undefined)
+        if (!provider) {
+          addEntry("error", `usage: /models <provider> — providers: ${PROVIDERS.map((p) => p.id).join(", ")}`)
+          setView("log")
+          return
+        }
+        const key = resolveKey(provider.id)
+        if (key === undefined) {
+          addEntry("error", `no API key for ${provider.label} — /connect ${provider.id} <key> first`)
+          setView("log")
+          return
+        }
+        setView("log")
+        setStatus(`${provider.id}: listing models…`)
+        void listModels(provider, key)
+          .then((ids) => {
+            addEntry("system", ids.length === 0 ? `${provider.label}: no models` : `${provider.label} models:\n${tailLines(ids.join("\n"), 30)}`)
+            setStatus("")
+          })
+          .catch((error) => {
+            addEntry("error", error instanceof Error ? error.message : String(error))
+            setStatus("")
+          })
+        return
+      }
       case "quit":
       case "exit":
       case "q":
@@ -311,9 +484,11 @@ export function ReviewApp() {
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
-      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
+      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={COLORS.bright}>chert</text>
         <text fg={COLORS.dim}>{` · ${cwdBase()} · ${headerInfo()}`}</text>
+        <box flexGrow={1} />
+        <text fg={COLORS.dim}>{`[ ${activeLabel()} ]`}</text>
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
 
