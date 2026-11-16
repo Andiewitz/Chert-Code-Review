@@ -168,7 +168,6 @@ async function phase3Tests(): Promise<void> {
       await new Promise((r) => setTimeout(r, 100));
       await setup.renderOnce();
       frame = setup.captureCharFrame();
-      console.log("AFTER OPEN BIG:\n" + frame + "\nENDAOB");
       // Up/Down scroll without changing files
       await new Promise((r) => setTimeout(r, 120));
       await setup.renderOnce();
@@ -195,7 +194,6 @@ async function phase3Tests(): Promise<void> {
       frame = setup.captureCharFrame();
       // after Esc with empty-ish, menu should open if input empty
       // (input was cleared by submit; Esc on empty opens menu)
-      console.log("ESC MENU FRAME:\n" + frame + "\nENDM");
       assert(frame.includes("Menu") || frame.includes("All files"), "phase3 Esc opens Menu");
 
       // close menu
@@ -518,6 +516,70 @@ async function phaseCTests(): Promise<void> {
   }
 }
 
+
+async function phaseETests(): Promise<void> {
+  const repo = mkdtempSync(join(tmpdir(), "chert-phasee-"));
+  const cfg = mkdtempSync(join(tmpdir(), "chert-phasee-cfg-"));
+  const orig = process.cwd();
+  const prevCfg = process.env.CHERT_CONFIG_DIR;
+  process.env.CHERT_CONFIG_DIR = cfg;
+  try {
+    runGit(repo, ["init", "-b", "main"]);
+    runGit(repo, ["config", "user.email", "smoke@example.com"]);
+    runGit(repo, ["config", "user.name", "smoke"]);
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\nexport const b = 2\n");
+    runGit(repo, ["add", "."]);
+    runGit(repo, ["commit", "-m", "base"]);
+    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\nexport const b = 2\nexport const c = 3\n");
+
+    process.chdir(repo);
+    await getTreeSitterClient().initialize().catch(() => {});
+    const { testRender: render } = await import("@opentui/solid");
+    const { ReviewApp } = await import("../src/tui/app.tsx");
+    const setup = await render(ReviewApp, { width: 100, height: 30 });
+    try {
+      await setup.renderOnce();
+      // focus code pane
+      await setup.mockInput.pressArrow("right");
+      await setup.renderOnce();
+      // move cursor past meta/hunk rows to first code line
+      for (let i = 0; i < 5; i++) { await setup.mockInput.pressArrow("down"); }
+      await setup.renderOnce();
+      // Enter starts range
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      // move to second code line
+      await setup.mockInput.pressArrow("down");
+      await setup.renderOnce();
+      // Enter completes range, prompts for note
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      // type a note and save
+      await setup.mockInput.pressKeys("my note".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await new Promise((r) => setTimeout(r, 60));
+      await setup.renderOnce();
+      let frame = setup.captureCharFrame();
+      assert(frame.includes("\u258C") || frame.includes("my note"), "phaseE highlight gutter or note shows");
+      // /highlights lists it
+      await setup.mockInput.pressKeys("/highlights".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("my note"), "phaseE /highlights lists note");
+    } finally {
+      await setup.dispose().catch(() => {});
+    }
+  } finally {
+    process.chdir(orig);
+    if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR;
+    else process.env.CHERT_CONFIG_DIR = prevCfg;
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(cfg, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   const originalCwd = process.cwd();
   const tmp = mkdtempSync(join(tmpdir(), "chert-smoke-"));
@@ -529,6 +591,7 @@ async function main(): Promise<void> {
 
   try {
     await phaseBTests();
+    await phaseETests();
     await phaseCTests();
     await phase1Tests();
     // Seed a repo that exercises every change kind.

@@ -35,6 +35,8 @@ import {
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
+import { loadHighlights, saveHighlights, resolveHighlights } from "../highlights"
+import type { Highlight, HighlightLevel } from "../highlights"
 
 // ---------------------------------------------------------------------------
 // UI
@@ -86,6 +88,7 @@ const COMMAND_DEFS: CommandDef[] = [
   { name: "cwd", usage: "/cwd", description: "show the current project" },
   { name: "tree", usage: "/tree", description: "show the whole project tree" },
   { name: "log", usage: "/log", description: "show chat history" },
+  { name: "highlights", usage: "/highlights [clear [yes]]", description: "list or clear highlights", takesArg: true },
   { name: "review", usage: "/review [working|staged|branch [base]|last|commit <ref>]", description: "what to review", takesArg: true },
   { name: "connect", usage: "/connect [provider [key]]", description: "connector status / save a provider key", takesArg: true },
   { name: "disconnect", usage: "/disconnect <provider>", description: "remove a saved provider key", takesArg: true },
@@ -235,6 +238,15 @@ export function ReviewApp() {
   const [answerIsError, setAnswerIsError] = createSignal(false)
   const [focus, setFocus] = createSignal<"files" | "code" | "prompt">("files")
   const [codeCursor, setCodeCursor] = createSignal(0)
+  const [highlights, setHighlights] = createSignal<Highlight[]>([])
+  const [resolvedHighlights, setResolvedHighlights] = createSignal(new Map<string, { startRow: number; endRow: number; moved: boolean } | null>())
+  const [rangeStart, setRangeStart] = createSignal<number | null>(null)
+  const [highlightMenuOpen, setHighlightMenuOpen] = createSignal(false)
+  const [highlightMenuIndex, setHighlightMenuIndex] = createSignal(0)
+  const [highlightNoteMode, setHighlightNoteMode] = createSignal(false)
+  const [highlightNoteText, setHighlightNoteText] = createSignal("")
+  const [pendingHighlight, setPendingHighlight] = createSignal<Highlight | null>(null)
+  const [highlightsClearPending, setHighlightsClearPending] = createSignal(false)
 
   const activeLabel = createMemo(() => {
     const active = connector()
@@ -265,6 +277,7 @@ export function ReviewApp() {
   let projectPickerSelectRef: SelectRenderable | undefined
   let diffScrollRef: ScrollBoxRenderable | undefined
   let codeScrollRef: ScrollBoxRenderable | undefined
+  let highlightMenuSelectRef: SelectRenderable | undefined
   let answerScrollRef: ScrollBoxRenderable | undefined
   let diffRef: any
   let inputRef: InputRenderable | undefined
@@ -376,6 +389,7 @@ export function ReviewApp() {
     setAnswerFile("")
     setAnswerIsError(false)
     try {
+      setHighlights(loadHighlights())
       setFiles(listChangedFiles(reviewSource()))
       try {
         setBranch(currentBranch())
@@ -610,6 +624,20 @@ export function ReviewApp() {
   })
 
   function submit(): void {
+    if (highlightNoteMode()) {
+      const hl = pendingHighlight()
+      if (hl) {
+        const finalHl = { ...hl, note: (inputRef?.value ?? "").trim() }
+        const next = [...highlights(), finalHl]
+        setHighlights(next)
+        try { saveHighlights(next) } catch { /* ignore */ }
+        setStatus(`highlighted lines ${hl.start}-${hl.end}`)
+      }
+      setHighlightNoteMode(false)
+      setPendingHighlight(null)
+      clearInput()
+      return
+    }
     const raw = (inputRef?.value ?? "").trim()
     if (raw === "") return
     clearInput()
@@ -1005,6 +1033,36 @@ export function ReviewApp() {
       case "log":
         setView("log")
         return
+      case "highlights": {
+        const toks = rest.split(/\s+/).filter(Boolean)
+        if (toks[0] === "clear") {
+          if (toks[1] !== "yes") {
+            const count = highlights().length
+            addEntry("system", `This will delete ${count} saved highlights. Type /highlights clear yes to confirm.`)
+            setView("log")
+            return
+          }
+          saveHighlights([])
+          setHighlights([])
+          setResolvedHighlights(new Map())
+          addEntry("system", "cleared all highlights")
+          setView("log")
+          return
+        }
+        const hs = highlights()
+        if (hs.length === 0) {
+          addEntry("system", "No highlights yet.")
+          setView("log")
+          return
+        }
+        const lines = hs.map((h) => {
+          const status = resolvedHighlights().get(h.id) === null ? "outdated" : ""
+          return `${h.path}:${h.start}-${h.end}  ${h.by === "you" ? "you" : "AI " + h.level}  ${h.note || "(no note)"}  ${status}`
+        })
+        addEntry("system", lines.join("\n"))
+        setView("log")
+        return
+      }
       case "cwd":
         addEntry("system", `project: ${cwd()}`)
         setView("log")
@@ -1144,11 +1202,56 @@ export function ReviewApp() {
       return
     }
 
+    // Highlight menu overlay
+    if (highlightMenuOpen()) {
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault()
+        const dir = key.name === "up" ? -1 : 1
+        setHighlightMenuIndex((i) => Math.max(0, Math.min(i + dir, 2)))
+        return
+      }
+      if (key.name === "return" || key.name === "enter") {
+        key.preventDefault()
+        const idx = highlightMenuIndex()
+        const cur = codeCursorRow()
+        const h = highlightForRowIndex(cur)
+        if (!h) { setHighlightMenuOpen(false); return }
+        if (idx === 0) {
+          const next = highlights().filter((x) => x.id !== h.id)
+          setHighlights(next)
+          try { saveHighlights(next) } catch { /* ignore */ }
+          setResolvedHighlights(new Map(resolvedHighlights()))
+          setHighlightMenuOpen(false)
+          setStatus("removed highlight")
+          return
+        }
+        if (idx === 1) {
+          setHighlightMenuOpen(false)
+          setHighlightNoteMode(true)
+          setHighlightNoteText(h.note)
+          setPendingHighlight(h)
+          setPromptValue(h.note)
+          setStatus("edit note (Enter saves, Esc cancels)")
+          return
+        }
+        setHighlightMenuOpen(false)
+        return
+      }
+      if (key.name === "escape") {
+        key.preventDefault()
+        setHighlightMenuOpen(false)
+        return
+      }
+      return
+    }
+
     // Esc
     if (key.name === "escape") {
       if (pickerOpen()) { key.preventDefault(); setPickerOpen(false); return }
       if (menuOpen()) { setMenuOpen(false); setAllFilesOpen(false); return }
       if (allFilesOpen()) { setAllFilesOpen(false); return }
+      if (highlightNoteMode()) { setHighlightNoteMode(false); setPendingHighlight(null); clearInput(); setStatus(""); return }
+      if (rangeStart() !== null) { setRangeStart(null); setStatus(""); return }
       if (hasText) { clearInput(); return }
       if (view() === "review") { setMenuOpen(true); return }
       return
@@ -1190,6 +1293,7 @@ export function ReviewApp() {
         return
       }
       if (view() === "tree") { openTreeSelection(); return }
+
       if (menuOpen()) { handleMenuSelection(menuIndex()); return }
       if (allFilesOpen()) {
         const af = (files() ?? [])[allFilesIndex()]
@@ -1201,8 +1305,82 @@ export function ReviewApp() {
           setFocus("code")
           return
         }
-        // code focus: Enter on a highlight? handled by Enter on highlighted line? 
-        // For now, Enter does nothing special in code focus.
+        // code focus: Enter
+        const cur = codeCursorRow()
+        const rows = codeRows()
+        const row = rows[cur]
+        const isCodeRow = row !== undefined && (row.kind === "context" || row.kind === "add" || row.kind === "del")
+        const h = highlightForRowIndex(cur)
+        if (h) {
+          setHighlightMenuOpen(true)
+          setHighlightMenuIndex(0)
+          return
+        }
+        if (!isCodeRow) {
+          setStatus("Move to a code line to highlight.")
+          return
+        }
+        if (rangeStart() === null) {
+          setRangeStart(cur)
+          setStatus(`Highlighting from line ${cur + 1}. Move to the last line and press Enter. Esc cancels.`)
+          return
+        }
+        // complete range
+        const rs = rangeStart()!
+        const start = Math.min(rs, cur)
+        const end = Math.max(rs, cur)
+        // validate: cannot cross hunk header or mix sides
+        const allRows = codeRows()
+        const sides = new Set<string>()
+        let crossesHunk = false
+        let lastHunk = -1
+        for (let i = start; i <= end; i++) {
+          const r = allRows[i]
+          if (!r) { crossesHunk = true; break }
+          if (r.kind === "hunk") { crossesHunk = true; break }
+          if (r.kind === "meta") { crossesHunk = true; break }
+          const side = r.kind === "del" ? "old" : "new"
+          sides.add(side)
+        }
+        if (crossesHunk) {
+          setStatus("Highlight range cannot cross a hunk header.")
+          setRangeStart(null)
+          return
+        }
+        if (sides.size > 1) {
+          setStatus("Highlight range cannot mix old and new sides.")
+          setRangeStart(null)
+          return
+        }
+        const side = sides.size === 1 ? (Array.from(sides)[0] as "new" | "old") : "new"
+        const textLines = allRows.slice(start, end + 1).map((r) => r.text)
+        const before = allRows.slice(Math.max(0, start - 2), start).map((r) => r.text)
+        const after = allRows.slice(end + 1, end + 3).map((r) => r.text)
+        const lineNo = (r: Row) => (side === "new" ? (r.newNo ?? 0) : (r.oldNo ?? 0))
+        const startLine = lineNo(allRows[start])
+        const endLine = lineNo(allRows[end])
+        const hl: Highlight = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          path: file()?.path ?? "",
+          side,
+          start: startLine,
+          end: endLine,
+          text: textLines,
+          before,
+          after,
+          by: "you",
+          level: "note",
+          note: "",
+          createdAt: Date.now(),
+        }
+        // prompt for note
+        setHighlightNoteMode(true)
+        setHighlightNoteText("")
+        // store pending highlight temporarily? Use a temp signal. We'll save on note submit.
+        // Store in a temp variable via a signal.
+        setPendingHighlight(hl)
+        setRangeStart(null)
+        setStatus("note for these lines (Enter saves, Enter with nothing saves without a note, Esc cancels)")
         return
       }
       return
@@ -1252,6 +1430,7 @@ export function ReviewApp() {
         }
         return
       }
+
       if (menuOpen()) {
         if (key.name === "up" || key.name === "down") {
           key.preventDefault()
@@ -1415,6 +1594,21 @@ export function ReviewApp() {
     }, 50)
   })
 
+  // Resolve highlights for the current file whenever rows or highlights change.
+  createEffect(() => {
+    const rows = codeRows()
+    const hs = highlights().filter((h) => h.path === (file()?.path ?? ""))
+    const newSide = new Map<string, { startRow: number; endRow: number; moved: boolean } | null>()
+    const oldSide = new Map<string, { startRow: number; endRow: number; moved: boolean } | null>()
+    // resolve for "new" side
+    const newResolved = resolveHighlights(rows, "new", hs)
+    const oldResolved = resolveHighlights(rows, "old", hs)
+    const merged = new Map<string, { startRow: number; endRow: number; moved: boolean } | null>()
+    for (const [k, v] of newResolved) merged.set(k, v)
+    for (const [k, v] of oldResolved) if (!merged.has(k)) merged.set(k, v)
+    setResolvedHighlights(merged)
+  })
+
   // Reset diff scroll to top whenever the displayed patch changes.
   createEffect(() => {
     patch()
@@ -1447,6 +1641,33 @@ export function ReviewApp() {
     const rows = codeRows()
     if (rows.length === 0) return 0
     return Math.max(0, Math.min(codeCursor(), rows.length - 1))
+  })
+
+  function highlightColor(h: Highlight): string {
+    if (h.by === "you") return COLORS.accent
+    if (h.level === "high") return COLORS.danger
+    if (h.level === "medium") return "#e0af68"
+    return COLORS.dim
+  }
+
+  function highlightForRowIndex(idx: number): Highlight | undefined {
+    const resolved = resolvedHighlights()
+    const hs = highlights().filter((h) => h.path === (file()?.path ?? ""))
+    for (const h of hs) {
+      const r = resolved.get(h.id)
+      if (r && r.startRow <= idx && idx <= r.endRow) return h
+    }
+    return undefined
+  }
+
+  const noteStrip = createMemo(() => {
+    const rows = codeRows()
+    const idx = codeCursorRow()
+    const h = highlightForRowIndex(idx)
+    if (!h) return ""
+    const who = h.by === "you" ? "you" : `AI ${h.level}`
+    const note = h.note.trim() === "" ? "(no note)" : h.note
+    return `${who} \u00b7 ${note}`
   })
 
   const suggestionWindow = createMemo(() => {
@@ -1521,9 +1742,11 @@ export function ReviewApp() {
                           const isCursor = () => i() === codeCursorRow()
                           const gutter = row.kind === "add" ? "+" : row.kind === "del" ? "-" : " "
                           const num = row.kind === "del" ? (row.oldNo ?? "") : (row.newNo ?? "")
+                          const h = () => highlightForRowIndex(i())
                           return (
                             <box flexDirection="row" backgroundColor={isCursor() ? COLORS.selectedBg : COLORS.bg}>
                               <text fg={COLORS.dim}>{isCursor() ? ">" : " "}</text>
+                              <text fg={h() ? highlightColor(h()!) : COLORS.dim}>{h() ? "\u258C" : " "}</text>
                               <text fg={COLORS.dim}>{String(num).padStart(4)} </text>
                               <text fg={row.kind === "add" ? COLORS.accent : row.kind === "del" ? COLORS.danger : COLORS.text}>{`${gutter} ${row.text}`}</text>
                             </box>
@@ -1648,6 +1871,16 @@ export function ReviewApp() {
         </box>
       </Show>
 
+      <Show when={highlightMenuOpen()}>
+        <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+          <text fg={COLORS.bright}>Highlight</text>
+          <box height={1} />
+          <text fg={highlightMenuIndex() === 0 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 0 ? "▸ " : "  "}Remove`}</text>
+          <text fg={highlightMenuIndex() === 1 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 1 ? "▸ " : "  "}Edit note`}</text>
+          <text fg={highlightMenuIndex() === 2 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 2 ? "▸ " : "  "}Close`}</text>
+        </box>
+      </Show>
+
       <Show
         when={suggestionWindow().show}
         fallback={<box height={1} flexShrink={0} border={["top"]} borderColor={COLORS.rule} />}
@@ -1681,6 +1914,9 @@ export function ReviewApp() {
           </text>
         </box>
       </Show>
+      <box height={1} flexShrink={0} paddingLeft={1}>
+        <text fg={COLORS.dim}>{noteStrip()}</text>
+      </box>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={COLORS.bright}>{"> "}</text>
         <input
