@@ -193,6 +193,60 @@ export function findReposBelow(dir: string): string[] {
   }
 }
 
+export interface ProjectSummary {
+  branch: string
+  changedCount: number
+}
+
+/** Lightweight summary of a project for the picker's details line.
+ * Returns undefined on any failure (missing dir, not a repo, git error). */
+export function projectSummary(path: string): ProjectSummary | undefined {
+  try {
+    const root = resolveProjectRoot(path)
+    if (root === undefined) return undefined
+    // branch
+    let branch = "no commits"
+    try {
+      const proc = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      if (proc.exitCode === 0) {
+        const out = proc.stdout.toString().trim()
+        if (out !== "") branch = out
+      }
+    } catch {
+      // keep default
+    }
+    // changed count: use listChangedFiles? that's in git.ts. Count via git diff --name-only HEAD + untracked.
+    let changedCount = 0
+    try {
+      const tracked = Bun.spawnSync(["git", "diff", "--name-only", "HEAD"], {
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      if (tracked.exitCode === 0) {
+        changedCount += tracked.stdout.toString().split("\n").filter((l) => l.trim() !== "").length
+      }
+      const untracked = Bun.spawnSync(["git", "ls-files", "--others", "--exclude-standard"], {
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      if (untracked.exitCode === 0) {
+        changedCount += untracked.stdout.toString().split("\n").filter((l) => l.trim() !== "").length
+      }
+    } catch {
+      // keep count
+    }
+    return { branch, changedCount }
+  } catch {
+    return undefined
+  }
+}
+
 /** Resolve `dir` to a repo root and chdir into it. Returns the root on
  * success, or undefined if `dir` is not inside a git repository. */
 export function enterProject(dir: string): string | undefined {
