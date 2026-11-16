@@ -33,6 +33,8 @@ import {
   resolveProjectRoot,
 } from "../projects"
 import { QUESTIONS } from "../questions"
+import { parsePatch } from "../diffrows"
+import type { Row } from "../diffrows"
 
 // ---------------------------------------------------------------------------
 // UI
@@ -83,6 +85,7 @@ const COMMAND_DEFS: CommandDef[] = [
   { name: "forget", usage: "/forget <name or path>", description: "remove a saved project", takesArg: true },
   { name: "cwd", usage: "/cwd", description: "show the current project" },
   { name: "tree", usage: "/tree", description: "show the whole project tree" },
+  { name: "log", usage: "/log", description: "show chat history" },
   { name: "review", usage: "/review [working|staged|branch [base]|last|commit <ref>]", description: "what to review", takesArg: true },
   { name: "connect", usage: "/connect [provider [key]]", description: "connector status / save a provider key", takesArg: true },
   { name: "disconnect", usage: "/disconnect <provider>", description: "remove a saved provider key", takesArg: true },
@@ -230,6 +233,8 @@ export function ReviewApp() {
   const [lastAnswer, setLastAnswer] = createSignal("")
   const [answerFile, setAnswerFile] = createSignal("")
   const [answerIsError, setAnswerIsError] = createSignal(false)
+  const [focus, setFocus] = createSignal<"files" | "code" | "prompt">("files")
+  const [codeCursor, setCodeCursor] = createSignal(0)
 
   const activeLabel = createMemo(() => {
     const active = connector()
@@ -259,6 +264,7 @@ export function ReviewApp() {
   let selectRef: SelectRenderable | undefined
   let projectPickerSelectRef: SelectRenderable | undefined
   let diffScrollRef: ScrollBoxRenderable | undefined
+  let codeScrollRef: ScrollBoxRenderable | undefined
   let answerScrollRef: ScrollBoxRenderable | undefined
   let diffRef: any
   let inputRef: InputRenderable | undefined
@@ -369,7 +375,6 @@ export function ReviewApp() {
     setAnswerOpen(false)
     setAnswerFile("")
     setAnswerIsError(false)
-    setReviewSource({ kind: "working" })
     try {
       setFiles(listChangedFiles(reviewSource()))
       try {
@@ -555,11 +560,12 @@ export function ReviewApp() {
 
   // Menu / all-files select options
   const menuOptions = createMemo<SelectOption[]>(() => [
-    { name: "All files", description: "jump to any changed file", value: 0 },
-    { name: "Pick another project", description: "switch projects", value: 1 },
+    { name: "Project tree", description: "browse all files", value: 0 },
+    { name: "Chat history", description: "past questions and answers", value: 1 },
     { name: "Refresh changes", description: "re-scan the working tree", value: 2 },
-    { name: "Help", description: "what the keys do", value: 3 },
-    { name: "Quit", description: "exit chert", value: 4 },
+    { name: "Review something else", description: "switch review source", value: 3 },
+    { name: "Help", description: "what the keys do", value: 4 },
+    { name: "Quit", description: "exit chert", value: 5 },
   ])
 
   const allFilesOptions = createMemo<SelectOption[]>(() => {
@@ -996,6 +1002,9 @@ export function ReviewApp() {
         setView("log")
         return
       }
+      case "log":
+        setView("log")
+        return
       case "cwd":
         addEntry("system", `project: ${cwd()}`)
         setView("log")
@@ -1141,7 +1150,6 @@ export function ReviewApp() {
       if (menuOpen()) { setMenuOpen(false); setAllFilesOpen(false); return }
       if (allFilesOpen()) { setAllFilesOpen(false); return }
       if (hasText) { clearInput(); return }
-      // empty box: open menu on review view
       if (view() === "review") { setMenuOpen(true); return }
       return
     }
@@ -1168,7 +1176,6 @@ export function ReviewApp() {
         setPromptValue(`/cd ${completed} `)
         return
       }
-      // cd completion not applicable: Tab does nothing
       return
     }
 
@@ -1182,24 +1189,22 @@ export function ReviewApp() {
         submit()
         return
       }
-      // empty box: activate highlighted action / open selection
       if (view() === "tree") { openTreeSelection(); return }
-      if (view() === "done") {
-        // handled by select below via enter on select? use menuIndex
-        handleDoneSelection(menuIndex())
-        return
-      }
-      if (menuOpen()) {
-        handleMenuSelection(menuIndex())
-        return
-      }
+      if (menuOpen()) { handleMenuSelection(menuIndex()); return }
       if (allFilesOpen()) {
         const af = (files() ?? [])[allFilesIndex()]
-        if (af) { setAllFilesOpen(false); setMenuOpen(false); goToFile(af.path); setView("review") }
+        if (af) { setAllFilesOpen(false); setMenuOpen(false); selectFile(files()!.indexOf(af)); setFocus("files") }
         return
       }
-      // review view: activate action
-      activateAction(action())
+      if (view() === "review") {
+        if (focus() === "files") {
+          setFocus("code")
+          return
+        }
+        // code focus: Enter on a highlight? handled by Enter on highlighted line? 
+        // For now, Enter does nothing special in code focus.
+        return
+      }
       return
     }
 
@@ -1208,63 +1213,34 @@ export function ReviewApp() {
       if (view() === "review") {
         if (key.name === "left" || key.name === "right") {
           key.preventDefault()
-          const items = ACTION_ITEMS
-          const first = isFirstFile() ? 1 : 0
-          let a = action()
-          if (key.name === "left") a = Math.max(first, a - 1)
-          else a = Math.min(items.length - 1, a + 1)
-          setAction(a)
+          setFocus((f) => (f === "files" ? "code" : f === "code" ? "files" : f))
           return
         }
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const delta = key.name === "up" ? -3 : 3
-          try { diffScrollRef?.scrollBy({ x: 0, y: delta }) } catch { /* ignore */ }
-          return
-        }
-        if (key.name === "pageup") {
-          key.preventDefault()
-          try {
-            if (answerOpen()) answerScrollRef?.scrollBy({ x: 0, y: -20 })
-            else diffScrollRef?.scrollBy({ x: 0, y: -20 })
-          } catch { /* ignore */ }
-          return
-        }
-        if (key.name === "pagedown") {
-          key.preventDefault()
-          try {
-            if (answerOpen()) answerScrollRef?.scrollBy({ x: 0, y: 20 })
-            else diffScrollRef?.scrollBy({ x: 0, y: 20 })
-          } catch { /* ignore */ }
-          return
-        }
-        return
-      }
-      if (view() === "done") {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const opts = doneOptions()
-          const dir = key.name === "up" ? -1 : 1
-          setMenuIndex((i) => Math.max(0, Math.min(i + dir, opts.length - 1)))
-          return
-        }
-        return
-      }
-      if (menuOpen()) {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const dir = key.name === "up" ? -1 : 1
-          setMenuIndex((i) => Math.max(0, Math.min(i + dir, menuOptions().length - 1)))
-          return
-        }
-        return
-      }
-      if (allFilesOpen()) {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const dir = key.name === "up" ? -1 : 1
-          setAllFilesIndex((i) => Math.max(0, Math.min(i + dir, (files()?.length ?? 1) - 1)))
-          return
+        if (focus() === "files") {
+          if (key.name === "up" || key.name === "down") {
+            key.preventDefault()
+            navigate(key.name === "up" ? -1 : 1)
+            return
+          }
+        } else if (focus() === "code") {
+          if (key.name === "up" || key.name === "down") {
+            key.preventDefault()
+            const rows = codeRows()
+            if (rows.length === 0) return
+            const dir = key.name === "up" ? -1 : 1
+            setCodeCursor((c) => Math.max(0, Math.min(c + dir, rows.length - 1)))
+            // auto-scroll
+            try { codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, codeCursor() - 5) }) } catch { /* ignore */ }
+            return
+          }
+          if (key.name === "pageup" || key.name === "pagedown") {
+            key.preventDefault()
+            const delta = key.name === "pageup" ? -10 : 10
+            const rows = codeRows()
+            setCodeCursor((c) => Math.max(0, Math.min(c + delta, rows.length - 1)))
+            try { codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, codeCursor() - 5) }) } catch { /* ignore */ }
+            return
+          }
         }
         return
       }
@@ -1276,29 +1252,62 @@ export function ReviewApp() {
         }
         return
       }
+      if (menuOpen()) {
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          const dir = key.name === "up" ? -1 : 1
+          setMenuIndex((i) => {
+            const next = Math.max(0, Math.min(i + dir, menuOptions().length - 1))
+            menuSelectRef?.setSelectedIndex(next)
+            return next
+          })
+          return
+        }
+        return
+      }
+      if (allFilesOpen()) {
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          const dir = key.name === "up" ? -1 : 1
+          setAllFilesIndex((i) => {
+            const next = Math.max(0, Math.min(i + dir, (files()?.length ?? 1) - 1))
+            allFilesSelectRef?.setSelectedIndex(next)
+            return next
+          })
+          return
+        }
+        return
+      }
     }
   })
 
+
   function handleMenuSelection(i: number): void {
     switch (i) {
-      case 0: // All files
-        setAllFilesOpen(true)
-        setAllFilesIndex(0)
-        return
-      case 1: // Pick another project
+      case 0: // Project tree
         setMenuOpen(false)
-        listProjects()
+        if (hasProject()) loadTree()
+        else setView("tree")
+        return
+      case 1: // Chat history
+        setMenuOpen(false)
+        setView("log")
         return
       case 2: // Refresh changes
         setMenuOpen(false)
         if (hasProject()) { load(); setStatus(`refreshed ${files()?.length ?? 0} files`) }
         return
-      case 3: // Help
+      case 3: // Review something else
+        setMenuOpen(false)
+        addEntry("system", "Type /review working · /review staged · /review branch [name] · /review last · /review commit <ref>")
+        setView("log")
+        return
+      case 4: // Help
         addEntry("system", HELP_TEXT)
         setView("log")
         setMenuOpen(false)
         return
-      case 4: // Quit
+      case 5: // Quit
         renderer.destroy()
         process.exit(0)
         return
@@ -1386,9 +1395,9 @@ export function ReviewApp() {
     if (view() === "done") return "Up/Down choose · Enter go · Ctrl+C quit"
     if (menuOpen()) return "Up/Down choose · Enter go · Esc close · Ctrl+C quit"
     if (allFilesOpen()) return "Up/Down choose · Enter jump · Esc close · Ctrl+C quit"
-    // review
-    if (answerOpen() && answerFile() === (file()?.path ?? "")) return "Left/Right choose · Enter go · Up/Down scroll · PgUp/PgDn read the answer · Esc menu · Ctrl+C quit"
-    return "Left/Right choose · Enter go · Up/Down scroll · Esc menu · Ctrl+C quit"
+    // review (two-pane)
+    if (answerOpen() && answerFile() === (file()?.path ?? "")) return "Left/Right switch pane · Up/Down move · Enter open · PgUp/PgDn read the answer · Esc menu · Ctrl+C quit"
+    return "Left/Right switch pane · Up/Down move · Enter open · Esc menu · Ctrl+C quit"
   }
 
   // Keep the log pinned to the bottom as entries arrive.
@@ -1414,7 +1423,7 @@ export function ReviewApp() {
 
   const options = createMemo<SelectOption[]>(() =>
     (files() ?? []).map((f, index) => ({
-      name: `${STATUS_GLYPH[f.status].padEnd(2)} ${f.path}`,
+      name: `${STATUS_GLYPH[f.status]} ${shortenPath(f.path, 22)}`,
       description: `+${f.additions} -${f.deletions}`,
       value: index,
     })),
@@ -1430,6 +1439,14 @@ export function ReviewApp() {
   const filetype = createMemo(() => {
     const path = file()?.path ?? ""
     return path === "" ? "" : extToFiletype(path.includes(".") ? path.slice(path.lastIndexOf(".")) : path)
+  })
+
+  const codeRows = createMemo<Row[]>(() => parsePatch(patch()))
+
+  const codeCursorRow = createMemo(() => {
+    const rows = codeRows()
+    if (rows.length === 0) return 0
+    return Math.max(0, Math.min(codeCursor(), rows.length - 1))
   })
 
   const suggestionWindow = createMemo(() => {
@@ -1468,84 +1485,65 @@ export function ReviewApp() {
                   </For>
                 </box>
               }>
-                <box flexGrow={1} flexDirection="column">
-                  <Show when={(files()?.length ?? 0) > 0}>
+                <box flexGrow={1} flexDirection="row">
+                  <box width="30%" flexDirection="column" border={["right"]} borderColor={COLORS.rule}>
                     <box height={1} flexShrink={0} paddingLeft={1}>
-                      <text fg={COLORS.bright}>{stepHeader()}</text>
+                      <text fg={focus() === "files" ? COLORS.bright : COLORS.dim}>{`${focus() === "files" ? "\u25B8 " : "  "}Files (${files()?.length ?? 0})`}</text>
+                    </box>
+                    <select
+                      ref={(el: SelectRenderable) => { selectRef = el }}
+                      flexGrow={1}
+                      options={options()}
+                      showDescription={true}
+                      showScrollIndicator={true}
+                      backgroundColor={COLORS.bg}
+                      focusedBackgroundColor={COLORS.bg}
+                      textColor={COLORS.text}
+                      focusedTextColor={COLORS.bright}
+                      selectedBackgroundColor={COLORS.selectedBg}
+                      selectedTextColor={COLORS.bright}
+                      descriptionColor={COLORS.dim}
+                      selectedDescriptionColor={COLORS.dim}
+                    />
+                  </box>
+                  <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+                    <box height={1} flexShrink={0}>
+                      <text fg={focus() === "code" ? COLORS.bright : COLORS.dim}>{`${file()?.path ?? ""}   ${file() ? (file()!.status === "added" || file()!.status === "untracked" ? "new" : file()!.status === "deleted" ? "deleted" : "changed") : ""}  ${file() ? `+${file()!.additions} -${file()!.deletions}` : ""}`}</text>
                     </box>
                     <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
-                  </Show>
-                  <scrollbox
-                    ref={(el: ScrollBoxRenderable) => { diffScrollRef = el }}
-                    flexGrow={1}
-                    backgroundColor={COLORS.bg}
-                  >
-                    <Show when={!loadError()} fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}>
-                      <Show
-                        when={file()}
-                        fallback={
-                          <box flexDirection="column">
-                            <Show when={files() !== null && (files()?.length ?? 0) === 0}>
-                              <Show when={reviewSource().kind === "working" && currentBranch() !== "no commits"} fallback={
-                                <text fg={COLORS.bright}>{`Nothing to review: there are no changes in ${cwdBase()}.`}</text>
-                              }>
-                                <text fg={COLORS.bright}>No uncommitted changes. To see the commits on this branch type /review branch</text>
-                              </Show>
-                              <box height={1} />
-                              <text fg={COLORS.dim}>Refresh (check for new changes)</text>
-                              <text fg={COLORS.dim}>Pick another project</text>
-                              <text fg={COLORS.dim}>Quit</text>
-                            </Show>
-                            <Show when={files() === null}>
-                              <text fg={COLORS.dim}>Loading changes…</text>
-                            </Show>
-                            <Show when={files() !== null && (files()?.length ?? 0) > 0}>
-                              <text fg={COLORS.dim}>No local changes</text>
-                            </Show>
-                          </box>
-                        }
-                      >
-                        <diff
-                          ref={(el: any) => (diffRef = el)}
-                          width="100%"
-                          diff={patch()}
-                          view="unified"
-                          filetype={filetype()}
-                          showLineNumbers={true}
-                        />
-                      </Show>
-                    </Show>
-                  </scrollbox>
-                  <Show when={answerOpen() && answerFile() === (file()?.path ?? "")}>
-                    <box height="40%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
-                      <text fg={COLORS.dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "…" : lastQuestion()}  ·  ${activeLabel()}`}</text>
-                      <scrollbox
-                        ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
-                        flexGrow={1}
-                        backgroundColor={COLORS.bg}
-                      >
-                        <text wrapMode="word" fg={busy() ? COLORS.dim : (answerIsError() ? COLORS.danger : COLORS.text)}>{busy() ? status() : lastAnswer()}</text>
-                      </scrollbox>
-                    </box>
-                  </Show>
-                  <Show when={(files()?.length ?? 0) > 0}>
-                    <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
-                      <For each={ACTION_ITEMS}>
-                        {(item, i) => {
-                          const disabled = () => i() === 0 && isFirstFile()
-                          const selected = () => action() === i() && !disabled()
+                    <scrollbox
+                      ref={(el: ScrollBoxRenderable) => { codeScrollRef = el }}
+                      flexGrow={1}
+                      backgroundColor={COLORS.bg}
+                    >
+                      <For each={codeRows()}>
+                        {(row, i) => {
+                          const isCursor = () => i() === codeCursorRow()
+                          const gutter = row.kind === "add" ? "+" : row.kind === "del" ? "-" : " "
+                          const num = row.kind === "del" ? (row.oldNo ?? "") : (row.newNo ?? "")
                           return (
-                            <Show when={!(i() === 0 && isFirstFile())}>
-                              <text fg={selected() ? COLORS.bg : COLORS.dim}>{selected() ? "█" : " "}</text>
-                              <text fg={selected() ? COLORS.bg : COLORS.text}>{selected() ? `[ ${item} ]` : `[ ${item} ]`}</text>
-                              <text fg={COLORS.dim}>{"  "}</text>
-                            </Show>
+                            <box flexDirection="row" backgroundColor={isCursor() ? COLORS.selectedBg : COLORS.bg}>
+                              <text fg={COLORS.dim}>{isCursor() ? ">" : " "}</text>
+                              <text fg={COLORS.dim}>{String(num).padStart(4)} </text>
+                              <text fg={row.kind === "add" ? COLORS.accent : row.kind === "del" ? COLORS.danger : COLORS.text}>{`${gutter} ${row.text}`}</text>
+                            </box>
                           )
                         }}
                       </For>
-                    </box>
-                    <box height={1} flexShrink={0} border={["top"]} borderColor={COLORS.rule} />
-                  </Show>
+                    </scrollbox>
+                    <Show when={answerOpen() && answerFile() === (file()?.path ?? "")}>
+                      <box height="35%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
+                        <text fg={COLORS.dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "\u2026" : lastQuestion()}  \u00b7  ${activeLabel()}`}</text>
+                        <scrollbox
+                          ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
+                          flexGrow={1}
+                          backgroundColor={COLORS.bg}
+                        >
+                          <text wrapMode="word" fg={busy() ? COLORS.dim : (answerIsError() ? COLORS.danger : COLORS.text)}>{busy() ? status() : lastAnswer()}</text>
+                        </scrollbox>
+                      </box>
+                    </Show>
+                  </box>
                 </box>
               </Show>
             </Show>

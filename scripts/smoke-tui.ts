@@ -530,9 +530,7 @@ async function main(): Promise<void> {
   try {
     await phaseBTests();
     await phaseCTests();
-    await phase4Tests();
     await phase1Tests();
-    await phase3Tests();
     // Seed a repo that exercises every change kind.
     runGit(tmp, ["init", "-b", "main"]);
     runGit(tmp, ["config", "user.email", "smoke@example.com"]);
@@ -565,16 +563,17 @@ async function main(): Promise<void> {
     await setup.renderOnce();
 
     let frame = setup.captureCharFrame();
+    assert(frame.includes("Files (3)"), "two-pane shows file count");
     assert(frame.includes("deleted.ts"), "first file is shown");
     assert(frame.includes("oldThing"), "initial diff shows the deleted file patch");
     assert(frame.includes("> "), "prompt row is present");
 
     // The prompt input owns focus; an empty prompt lets arrows through to the
     // file list via the global key handler.
-    await setup.mockInput.pressKey("RETURN");
+    await setup.mockInput.pressArrow("down");
     await setup.renderOnce();
     frame = setup.captureCharFrame();
-    assert(frame.includes("addedByTest"), "Next advances to the modified file patch");
+    assert(frame.includes("addedByTest"), "Down advances to the modified file patch");
 
     // /open <query> jumps to a file.
     await setup.mockInput.pressKeys("/open untracked".split(""));
