@@ -2,7 +2,6 @@ import { createEffect, createMemo, createSignal, For, Show, onCleanup } from "so
 import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption, SelectRenderable } from "@opentui/core"
-import { realpathSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { currentBranch, listChangedFiles, loadPatch } from "../git"
 import type { ReviewFile } from "../git"
@@ -31,6 +30,7 @@ import {
   projectSummary,
   resolveProjectRoot,
 } from "../projects"
+import { QUESTIONS } from "../questions"
 
 // ---------------------------------------------------------------------------
 // UI
@@ -39,7 +39,7 @@ import {
 const COLORS = {
   bg: "#1e1e1e",
   rule: "#3a3a3a",
-  dim: "#7a7a7a",
+  dim: "#9a9a9a",
   text: "#d6d6d6",
   bright: "#ffffff",
   selectedBg: "#2e2e2e",
@@ -48,10 +48,10 @@ const COLORS = {
 }
 
 const STATUS_GLYPH: Record<ReviewFile["status"], string> = {
-  added: "A",
-  modified: "M",
-  deleted: "D",
-  untracked: "??",
+  added: "new",
+  modified: "changed",
+  deleted: "deleted",
+  untracked: "new",
 }
 
 type EntryKind = "user" | "agent" | "system" | "error"
@@ -154,19 +154,22 @@ function scoreCommand(def: CommandDef, query: string): number {
 
 function toRealPath(path: string): string {
   try {
+    const { realpathSync } = require("node:fs")
     return realpathSync(path)
   } catch {
     return resolve(path)
   }
 }
 
-type MainView = "review" | "tree" | "log" | "projects"
+type MainView = "review" | "tree" | "log" | "projects" | "done"
 type PickerKind = "recent" | "found"
 interface PickerItem {
   path: string
   name: string
   kind: PickerKind
 }
+
+const ACTION_ITEMS = ["Back", "Is it slow?", "Is it messy?", "Is it safe?", "Next"]
 
 export function ReviewApp() {
   const renderer = useRenderer()
@@ -185,12 +188,6 @@ export function ReviewApp() {
   const [treeLines, setTreeLines] = createSignal<TreeLine[]>([])
   const [treeIndex, setTreeIndex] = createSignal(0)
   const [view, setView] = createSignal<MainView>(initialRoot ? "review" : "projects")
-  const [mode, setMode] = createSignal<"prompt" | "browse">("prompt")
-  const [answerOpen, setAnswerOpen] = createSignal(false)
-  const [busy, setBusy] = createSignal(false)
-  const [scrollTarget, setScrollTarget] = createSignal<"diff" | "answer">("diff")
-  const [lastQuestion, setLastQuestion] = createSignal("")
-  const [lastAnswer, setLastAnswer] = createSignal("")
   const [previousView, setPreviousView] = createSignal<"review" | "tree" | "log">("review")
   const [hasProject, setHasProject] = createSignal(initialRoot !== undefined)
   const [branch, setBranch] = createSignal("no commits")
@@ -207,25 +204,28 @@ export function ReviewApp() {
   const [projectPickerIndex, setProjectPickerIndex] = createSignal(0)
   const [highlightedSummary, setHighlightedSummary] = createSignal<{ branch: string; changedCount: number } | undefined>(undefined)
 
+  // Phase 3 guided review state
+  const [action, setAction] = createSignal(4)
+  const [queue, setQueue] = createSignal<string[]>([])
+  const [fileMemory, setFileMemory] = createSignal(new Map<string, "asked" | "passed">())
+  const [menuOpen, setMenuOpen] = createSignal(false)
+  const [allFilesOpen, setAllFilesOpen] = createSignal(false)
+  const [menuIndex, setMenuIndex] = createSignal(0)
+  const [allFilesIndex, setAllFilesIndex] = createSignal(0)
+
+  // Phase 4 answer state
+  const [answerOpen, setAnswerOpen] = createSignal(false)
+  const [busy, setBusy] = createSignal(false)
+  const [scrollTarget, setScrollTarget] = createSignal<"diff" | "answer">("diff")
+  const [lastQuestion, setLastQuestion] = createSignal("")
+  const [lastAnswer, setLastAnswer] = createSignal("")
+
   const activeLabel = createMemo(() => {
     const active = connector()
     if (active === "opencode") return "opencode"
     const provider = findProvider(active)
     return provider ? `${provider.id}/${model() ?? provider.defaultModel}` : active
   })
-
-  function footerHints(): string {
-    const m = mode()
-    const v = view()
-    if (m === "browse") {
-      if (v === "projects") return "Up/Down choose · Enter open · Esc back · Ctrl+C quit"
-      if (v === "tree") return "j/k rows · Enter open · i ask · Tab views · Ctrl+C quit"
-      return "j/k files · space/b scroll · i ask · o projects · Ctrl+C quit"
-    }
-    if (v === "projects") return "Up/Down choose · Enter open · Esc back · Ctrl+C quit"
-    if (v === "tree") return "↑↓ rows · Enter open · / commands · Tab views · Ctrl+C quit"
-    return "↑↓ files · Esc browse · / commands · Tab views · Ctrl+C quit"
-  }
 
   const patchCache = new Map<string, string>()
   let patchFor = ""
@@ -237,11 +237,27 @@ export function ReviewApp() {
   let inputRef: InputRenderable | undefined
   let logRef: ScrollBoxRenderable | undefined
   let treeRef: ScrollBoxRenderable | undefined
+  let menuSelectRef: SelectRenderable | undefined
+  let allFilesSelectRef: SelectRenderable | undefined
 
   const file = createMemo(() => {
     const list = files()
     if (!list || list.length === 0) return undefined
     return list[Math.min(selected(), list.length - 1)]
+  })
+
+  const isLastFile = createMemo(() => {
+    const q = queue()
+    const cur = file()?.path
+    if (q.length === 0 || cur === undefined) return true
+    return q.indexOf(cur) === q.length - 1
+  })
+
+  const isFirstFile = createMemo(() => {
+    const q = queue()
+    const cur = file()?.path
+    if (q.length === 0 || cur === undefined) return true
+    return q.indexOf(cur) <= 0
   })
 
   function cwdBase(): string {
@@ -435,8 +451,7 @@ export function ReviewApp() {
     setStatus("removed from the list (your files were not touched)")
   }
 
-  // Synchronous loads: git is fast, and sync state updates render
-  // deterministically regardless of the host renderer's event loop.
+  // Synchronous loads
   function load(): void {
     setFiles(null)
     setLoadError(null)
@@ -444,6 +459,12 @@ export function ReviewApp() {
     patchCache.clear()
     patchFor = ""
     setSelected(0)
+    setQueue([])
+    setFileMemory(new Map())
+    setAction(4)
+    setMenuOpen(false)
+    setAllFilesOpen(false)
+    setAnswerOpen(false)
     try {
       setFiles(listChangedFiles())
       try {
@@ -456,13 +477,18 @@ export function ReviewApp() {
       setBranch("no commits")
     }
     selectFile(0)
-    // Rebuild the tree in place when it's on screen (/refresh, /cd).
+    try {
+      const list = files()
+      if (list) setQueue(list.map((f) => f.path))
+    } catch {
+      setQueue([])
+    }
     if (view() === "tree") {
       try {
         setTreeLines(buildTreeLines(changedGlyphs()))
         setTreeIndex(0)
       } catch {
-        // Leave the stale tree; /tree or Tab reloads it.
+        // leave stale
       }
     }
   }
@@ -474,11 +500,16 @@ export function ReviewApp() {
     setSelected(i)
     selectRef?.setSelectedIndex(i)
     const current = list[i]
-    if (patchFor === current.path) return
+    if (patchFor === current.path) {
+      setAction(4)
+      return
+    }
     const cached = patchCache.get(current.path)
     if (cached !== undefined) {
       setPatch(cached)
       patchFor = current.path
+      setAction(4)
+      try { diffScrollRef?.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ }
       return
     }
     try {
@@ -489,11 +520,8 @@ export function ReviewApp() {
     } catch (error) {
       setPatch(`Error loading diff for ${current.path}: ${error instanceof Error ? error.message : String(error)}`)
     }
-    try {
-      diffScrollRef?.scrollTo({ x: 0, y: 0 })
-    } catch {
-      // ignore
-    }
+    setAction(4)
+    try { diffScrollRef?.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ }
   }
 
   function navigate(delta: number): void {
@@ -523,7 +551,6 @@ export function ReviewApp() {
     const next = Math.max(0, Math.min(treeIndex() + delta, lines.length - 1))
     if (next === treeIndex()) return
     setTreeIndex(next)
-    // Keep the selection a few rows inside the viewport on tall trees.
     treeRef?.scrollTo({ x: 0, y: Math.max(0, next - 10) })
   }
 
@@ -544,11 +571,105 @@ export function ReviewApp() {
     setStatus(`→ ${line.path}`)
   }
 
+  // Queue helpers
+  function goToFile(path: string): void {
+    const list = files() ?? []
+    const idx = list.findIndex((f) => f.path === path)
+    if (idx !== -1) selectFile(idx)
+    setAction(4)
+  }
+
+  function nextFile(): void {
+    const cur = file()?.path
+    if (cur) {
+      const mem = new Map(fileMemory())
+      if (!mem.has(cur)) mem.set(cur, "passed")
+      setFileMemory(mem)
+    }
+    const q = queue()
+    const i = q.indexOf(cur ?? "")
+    if (i === -1 || i === q.length - 1) {
+      setView("done")
+      return
+    }
+    goToFile(q[i + 1])
+  }
+
+  function prevFile(): void {
+    const cur = file()?.path
+    const q = queue()
+    const i = q.indexOf(cur ?? "")
+    if (i <= 0) return
+    goToFile(q[i - 1])
+  }
+
+  function markAsked(path: string): void {
+    const mem = new Map(fileMemory())
+    mem.set(path, "asked")
+    setFileMemory(mem)
+  }
+
+  // Shorten long paths from the left
+  function shortenPath(p: string, max: number): string {
+    if (p.length <= max) return p
+    const parts = p.split("/")
+    let out = parts[parts.length - 1]
+    for (let i = parts.length - 2; i >= 0; i--) {
+      const cand = parts[i] + "/" + out
+      if (cand.length + 2 > max) {
+        return "…/" + out
+      }
+      out = cand
+    }
+    return out
+  }
+
+  function stepHeader(): string {
+    const q = queue()
+    const cur = file()?.path ?? ""
+    const i = Math.max(0, q.indexOf(cur))
+    const total = q.length === 0 ? (files()?.length ?? 0) : q.length
+    const pos = total === 0 ? 0 : i + 1
+    const barLen = 20
+    const filled = total === 0 ? 0 : Math.round((pos / total) * barLen)
+    const bar = "█".repeat(filled) + "░".repeat(barLen - filled)
+    const f = file()
+    const statusWord = f ? STATUS_GLYPH[f.status] : ""
+    // map glyph to plain word
+    const plain = f ? (f.status === "added" || f.status === "untracked" ? "new" : f.status === "deleted" ? "deleted" : "changed") : ""
+    const adds = f ? `+${f.additions}` : ""
+    const dels = f ? `-${f.deletions}` : ""
+    const path = shortenPath(cur, 40)
+    return `File ${pos} of ${total}  [${bar}]  ${path}   ${plain}  ${adds} ${dels}`.trim()
+  }
+
   if (initialRoot) {
     load()
   } else {
     refreshProjectPicker()
   }
+
+  // Menu / all-files select options
+  const menuOptions = createMemo<SelectOption[]>(() => [
+    { name: "All files", description: "jump to any changed file", value: 0 },
+    { name: "Pick another project", description: "switch projects", value: 1 },
+    { name: "Refresh changes", description: "re-scan the working tree", value: 2 },
+    { name: "Help", description: "what the keys do", value: 3 },
+    { name: "Quit", description: "exit chert", value: 4 },
+  ])
+
+  const allFilesOptions = createMemo<SelectOption[]>(() => {
+    const mem = fileMemory()
+    return (files() ?? []).map((f, idx) => {
+      const m = mem.get(f.path)
+      const marker = m === "asked" ? "✓" : m === "passed" ? "-" : " "
+      return {
+        name: `${marker} ${f.path}`,
+        description: f.status === "added" || f.status === "untracked" ? "new" : f.status === "deleted" ? "deleted" : "changed",
+        value: idx,
+      }
+    })
+  })
 
   function submit(): void {
     const raw = (inputRef?.value ?? "").trim()
@@ -563,9 +684,12 @@ export function ReviewApp() {
       return
     }
     if (busy()) {
-      setStatus("still waiting on the last answer")
+      setStatus("Still thinking about your last question.")
       return
     }
+    const cur = file()?.path
+    if (cur) markAsked(cur)
+    setAction(4)
     void askAgent(raw)
   }
 
@@ -575,8 +699,8 @@ export function ReviewApp() {
     setBusy(true)
     setLastAnswer("")
     const startedAt = Date.now()
-    let statusPrefix = "thinking… "
-    setStatus("thinking… 0s")
+    let statusPrefix = "Thinking… "
+    setStatus("Thinking… 0s")
     let interval: ReturnType<typeof setInterval> | undefined
     interval = setInterval(() => {
       setStatus(`${statusPrefix}${Math.floor((Date.now() - startedAt) / 1000)}s`)
@@ -592,13 +716,16 @@ export function ReviewApp() {
       const active = connector()
       if (active === "opencode") {
         if (!opencodeAvailable()) {
-          const msg = "opencode CLI not found — install it (https://opencode.ai) or /connect a provider (openrouter, gemini, groq, nim)"
-          addEntry("error", msg)
-          setLastAnswer(msg)
+          const msg = "No AI is connected yet. Easiest: get a free key at https://openrouter.ai/keys, then type /connect openrouter YOUR_KEY and then /use openrouter."
+          // build from PROVIDERS for the first available url
+          const prov = PROVIDERS[0]
+          const better = `No AI is connected yet. Easiest: get a free key at ${prov.keyUrl}, then type /connect ${prov.id} YOUR_KEY and then /use ${prov.id}.`
+          addEntry("error", better)
+          setLastAnswer(better)
           return
         }
-        statusPrefix = "thinking… "
-        setStatus("thinking… 0s")
+        statusPrefix = "Thinking… "
+        setStatus("Thinking… 0s")
         const result = await runAgent(prompt, cwd())
         addEntry("agent", result)
         setLastAnswer(result)
@@ -613,13 +740,13 @@ export function ReviewApp() {
       }
       const key = resolveKey(provider.id)
       if (key === undefined) {
-        const msg = `no API key for ${provider.label} — /connect ${provider.id} <key> or set ${provider.envKeys[0]}`
+        const msg = `No AI is connected yet. Easiest: get a free key at ${provider.keyUrl}, then type /connect ${provider.id} YOUR_KEY and then /use ${provider.id}.`
         addEntry("error", msg)
         setLastAnswer(msg)
         return
       }
       const useModel = model() ?? provider.defaultModel
-      statusPrefix = `${provider.id} ${useModel}: thinking… `
+      statusPrefix = `${provider.id} ${useModel}: Thinking… `
       setStatus(`${statusPrefix}0s`)
       const system = `You are chert's code-review assistant. Current project directory: ${cwd()}. Locally changed files: ${(files() ?? []).map((f) => f.path).join(", ") || "none"}.`
       const result = await chatCompletion(provider, key, useModel, system, prompt)
@@ -635,6 +762,7 @@ export function ReviewApp() {
       const v = view()
       if (v === "review") {
         setAnswerOpen(true)
+        setAction(4)
         setStatus("")
       } else if (v === "tree" || v === "projects") {
         setStatus("answer ready, press a in review")
@@ -684,7 +812,7 @@ export function ReviewApp() {
         return
       case "refresh": {
         if (!hasProject()) {
-          addEntry("error", "no project open, use /project")
+          addEntry("error", "No project open. Press Esc, then pick Pick another project.")
           setView("log")
           return
         }
@@ -694,7 +822,7 @@ export function ReviewApp() {
       }
       case "open": {
         if (!hasProject()) {
-          addEntry("error", "no project open, use /project")
+          addEntry("error", "No project open. Press Esc, then pick Pick another project.")
           setView("log")
           return
         }
@@ -713,6 +841,7 @@ export function ReviewApp() {
         }
         setView("review")
         selectFile(index)
+        // reset queue to all files? keep current queue
         setStatus(`→ ${list[index].path}`)
         return
       }
@@ -780,7 +909,7 @@ export function ReviewApp() {
         return
       case "tree":
         if (!hasProject()) {
-          addEntry("error", "no project open, use /project")
+          addEntry("error", "No project open. Press Esc, then pick Pick another project.")
           setView("log")
           return
         }
@@ -900,130 +1029,12 @@ export function ReviewApp() {
     }
   }
 
-  // The prompt input owns keyboard focus. Global handlers run before
-  // renderable handlers, so we preventDefault the keys we want for ourselves
-  // and let every printable character flow into the input untouched.
+  // Keyboard handling: no modes. Box empty => screen keys. Box has text => editing.
   useKeyboard((key) => {
-    // Browse mode: single-key shortcuts. Prevent every key from reaching the
-    // always-focused prompt input so nothing is typed.
-    if (mode() === "browse") {
-      if (key.ctrl && key.name === "c") return
-      key.preventDefault()
+    const hasText = (inputRef?.value ?? "") !== ""
+    const showList = pickerOpen() || (commandQuery() !== null && (filteredCommands().length > 0))
 
-      if (key.name === "j" || key.name === "down") {
-        if (view() === "projects") selectProjectPickerIndex(projectPickerIndex() + 1)
-        else if (view() === "tree") moveTreeIndex(1)
-        else if (view() === "review" && hasProject()) navigate(1)
-        return
-      }
-      if (key.name === "k" || key.name === "up") {
-        if (view() === "projects") selectProjectPickerIndex(projectPickerIndex() - 1)
-        else if (view() === "tree") moveTreeIndex(-1)
-        else if (view() === "review" && hasProject()) navigate(-1)
-        return
-      }
-
-      // Scroll whichever pane is the current scroll target.
-      if (key.name === "space" || key.name === " " || key.sequence === " " || key.raw === " " || key.name === "pagedown" || (key.ctrl && key.name === "d")) {
-        try {
-          if (scrollTarget() === "answer") answerScrollRef?.scrollBy({ x: 0, y: 15 })
-          else diffScrollRef?.scrollBy({ x: 0, y: 15 })
-        } catch { /* ignore */ }
-        return
-      }
-      if (key.name === "b" || key.name === "pageup" || (key.ctrl && key.name === "u")) {
-        try {
-          if (scrollTarget() === "answer") answerScrollRef?.scrollBy({ x: 0, y: -15 })
-          else diffScrollRef?.scrollBy({ x: 0, y: -15 })
-        } catch { /* ignore */ }
-        return
-      }
-      if (key.name === "g" && !key.shift) {
-        try {
-          if (scrollTarget() === "answer") answerScrollRef?.scrollTo({ x: 0, y: 0 })
-          else diffScrollRef?.scrollTo({ x: 0, y: 0 })
-        } catch { /* ignore */ }
-        return
-      }
-      if (key.name === "G" || (key.name === "g" && key.shift)) {
-        try {
-          if (scrollTarget() === "answer") answerScrollRef?.scrollTo({ x: 0, y: Infinity })
-          else diffScrollRef?.scrollTo({ x: 0, y: Infinity })
-        } catch { /* ignore */ }
-        return
-      }
-
-      // Hunk jumps (stretch): DiffRenderable exposes getHunkRowOffsets().
-      if (key.name === "]" || key.name === "[") {
-        try {
-          const offsets = (diffRef && typeof diffRef.getHunkRowOffsets === "function")
-            ? diffRef.getHunkRowOffsets()
-            : []
-          if (Array.isArray(offsets) && offsets.length > 0) {
-            const cur = diffScrollRef?.scrollTop ?? 0
-            let target: number | undefined
-            if (key.name === "]") {
-              target = offsets.find((o: number) => o > cur + 1)
-            } else {
-              for (let i = offsets.length - 1; i >= 0; i--) {
-                if (offsets[i] < cur - 1) { target = offsets[i]; break }
-              }
-            }
-            if (target !== undefined) diffScrollRef?.scrollTo({ x: 0, y: target })
-          }
-        } catch {
-          // ignore
-        }
-        return
-      }
-
-      if (key.name === "a" && !key.shift) {
-        setAnswerOpen((o) => !o)
-        return
-      }
-      if (key.name === "A" || (key.name === "a" && key.shift)) {
-        setScrollTarget((t) => (t === "diff" ? "answer" : "diff"))
-        return
-      }
-
-      if (key.name === "tab") {
-        const next = view() === "review" ? "tree" : view() === "tree" ? "log" : view() === "log" ? "review" : "projects"
-        if (next === "projects") openProjectPicker()
-        else if (next === "tree") { if (hasProject()) loadTree(); else setView("tree") }
-        else setView(next)
-        return
-      }
-      if (key.name === "return" || key.name === "enter") {
-        if (view() === "tree") { openTreeSelection(); return }
-        if (view() === "projects") { openSelectedProject(); return }
-        setMode("prompt")
-        return
-      }
-      if (key.name === "i") { setMode("prompt"); return }
-      if (key.name === "/" || key.sequence === "/" || key.raw === "/") { setMode("prompt"); setPromptValue("/"); return }
-      if (key.name === "r") {
-        if (hasProject()) { load(); setStatus(`refreshed ${files()?.length ?? 0} files`) }
-        return
-      }
-      if (key.name === "o") { openProjectPicker(); return }
-      if (key.name === "?" || key.sequence === "?" || key.raw === "?") { addEntry("system", HELP_TEXT); setView("log"); return }
-      if (key.name === "q") { renderer.destroy(); process.exit(0) }
-      return
-    }
-
-    // Prompt mode (existing behavior).
-    const list = visibleSuggestions()
-    const picking = pickerOpen()
-    const typingCommand = commandQuery() !== null
-    const showList = picking || (typingCommand && list.length > 0)
-
-    if (view() === "projects" && (inputRef?.value ?? "") === "" && !showList &&
-        (key.name === "delete" || key.name === "Delete" || key.sequence === "\u001B[3~")) {
-      key.preventDefault()
-      forgetSelectedProject()
-      return
-    }
-
+    // Ctrl+P command picker
     if (key.ctrl && key.name === "p") {
       key.preventDefault()
       if (pickerOpen()) setPickerOpen(false)
@@ -1031,15 +1042,21 @@ export function ReviewApp() {
       return
     }
 
-    if (key.name === "escape" || key.sequence === "\x1b" || key.raw === "\x1b") {
+    // Esc
+    if (key.name === "escape") {
       if (pickerOpen()) { key.preventDefault(); setPickerOpen(false); return }
-      if ((inputRef?.value ?? "") !== "") { clearInput(); return }
-      setMode("browse")
+      if (menuOpen()) { setMenuOpen(false); setAllFilesOpen(false); return }
+      if (allFilesOpen()) { setAllFilesOpen(false); return }
+      if (hasText) { clearInput(); return }
+      // empty box: open menu on review view
+      if (view() === "review") { setMenuOpen(true); return }
       return
     }
 
+    // Suggestion list navigation
     if ((key.name === "up" || key.name === "down") && showList) {
       key.preventDefault()
+      const list = visibleSuggestions()
       if (list.length === 0) return
       const dir = key.name === "up" ? -1 : 1
       setSuggestionIndex((i) => Math.max(0, Math.min(i + dir, list.length - 1)))
@@ -1048,59 +1065,266 @@ export function ReviewApp() {
 
     if (key.name === "tab") {
       key.preventDefault()
-      if (showList && list.length > 0) {
-        acceptSuggestion(list[Math.min(suggestionIndex(), list.length - 1)])
+      if (showList && visibleSuggestions().length > 0) {
+        acceptSuggestion(visibleSuggestions()[Math.min(suggestionIndex(), visibleSuggestions().length - 1)])
         return
       }
-      const next = view() === "review" ? "tree" : view() === "tree" ? "log" : view() === "log" ? "review" : "projects"
-      if (next === "projects") openProjectPicker()
-      else if (next === "tree") { if (hasProject()) loadTree(); else setView("tree") }
+      // cycle review -> tree -> log -> review
+      const next = view() === "review" ? "tree" : view() === "tree" ? "log" : view() === "log" ? "review" : "review"
+      if (next === "tree") { if (hasProject()) loadTree(); else setView("tree") }
       else setView(next)
       return
     }
 
     if (key.name === "return" || key.name === "enter") {
       key.preventDefault()
-      if (picking && list.length > 0) {
-        acceptSuggestion(list[Math.min(suggestionIndex(), list.length - 1)])
+      if (pickerOpen() && visibleSuggestions().length > 0) {
+        acceptSuggestion(visibleSuggestions()[Math.min(suggestionIndex(), visibleSuggestions().length - 1)])
         return
       }
-      if (view() === "projects" && (inputRef?.value ?? "") === "") {
-        openSelectedProject()
+      if (hasText) {
+        submit()
         return
       }
-      if (view() === "tree" && (inputRef?.value ?? "") === "") {
-        openTreeSelection()
+      // empty box: activate highlighted action / open selection
+      if (view() === "projects") { openSelectedProject(); return }
+      if (view() === "tree") { openTreeSelection(); return }
+      if (view() === "done") {
+        // handled by select below via enter on select? use menuIndex
+        handleDoneSelection(menuIndex())
         return
       }
-      submit()
+      if (menuOpen()) {
+        handleMenuSelection(menuIndex())
+        return
+      }
+      if (allFilesOpen()) {
+        const af = (files() ?? [])[allFilesIndex()]
+        if (af) { setAllFilesOpen(false); setMenuOpen(false); goToFile(af.path); setView("review") }
+        return
+      }
+      // review view: activate action
+      activateAction(action())
       return
     }
 
-    if ((key.name === "up" || key.name === "down") && (inputRef?.value ?? "") === "") {
+    // Empty box: screen keys
+    if (!hasText) {
       if (view() === "projects") {
-        key.preventDefault()
-        selectProjectPickerIndex(projectPickerIndex() + (key.name === "up" ? -1 : 1))
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          selectProjectPickerIndex(projectPickerIndex() + (key.name === "up" ? -1 : 1))
+          return
+        }
+        if (key.name === "delete" || key.name === "Delete" || key.sequence === "\u001B[3~") {
+          key.preventDefault()
+          forgetSelectedProject()
+          return
+        }
+        return
+      }
+      if (view() === "review") {
+        if (key.name === "left" || key.name === "right") {
+          key.preventDefault()
+          const items = ACTION_ITEMS
+          const first = isFirstFile() ? 1 : 0
+          let a = action()
+          if (key.name === "left") a = Math.max(first, a - 1)
+          else a = Math.min(items.length - 1, a + 1)
+          setAction(a)
+          return
+        }
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          const delta = key.name === "up" ? -3 : 3
+          try { diffScrollRef?.scrollBy({ x: 0, y: delta }) } catch { /* ignore */ }
+          return
+        }
+        if (key.name === "pageup") {
+          key.preventDefault()
+          try {
+            if (answerOpen()) answerScrollRef?.scrollBy({ x: 0, y: -20 })
+            else diffScrollRef?.scrollBy({ x: 0, y: -20 })
+          } catch { /* ignore */ }
+          return
+        }
+        if (key.name === "pagedown") {
+          key.preventDefault()
+          try {
+            if (answerOpen()) answerScrollRef?.scrollBy({ x: 0, y: 20 })
+            else diffScrollRef?.scrollBy({ x: 0, y: 20 })
+          } catch { /* ignore */ }
+          return
+        }
+        return
+      }
+      if (view() === "done") {
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          const opts = doneOptions()
+          const dir = key.name === "up" ? -1 : 1
+          setMenuIndex((i) => Math.max(0, Math.min(i + dir, opts.length - 1)))
+          return
+        }
+        return
+      }
+      if (menuOpen()) {
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          const dir = key.name === "up" ? -1 : 1
+          setMenuIndex((i) => Math.max(0, Math.min(i + dir, menuOptions().length - 1)))
+          return
+        }
+        return
+      }
+      if (allFilesOpen()) {
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          const dir = key.name === "up" ? -1 : 1
+          setAllFilesIndex((i) => Math.max(0, Math.min(i + dir, (files()?.length ?? 1) - 1)))
+          return
+        }
         return
       }
       if (view() === "tree") {
-        key.preventDefault()
-        moveTreeIndex(key.name === "up" ? -1 : 1)
-        return
-      }
-      if (view() === "review" && hasProject()) {
-        key.preventDefault()
-        navigate(key.name === "up" ? -1 : 1)
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          moveTreeIndex(key.name === "up" ? -1 : 1)
+          return
+        }
         return
       }
     }
   })
+
+  function handleMenuSelection(i: number): void {
+    switch (i) {
+      case 0: // All files
+        setAllFilesOpen(true)
+        setAllFilesIndex(0)
+        return
+      case 1: // Pick another project
+        setMenuOpen(false)
+        openProjectPicker()
+        return
+      case 2: // Refresh changes
+        setMenuOpen(false)
+        if (hasProject()) { load(); setStatus(`refreshed ${files()?.length ?? 0} files`) }
+        return
+      case 3: // Help
+        addEntry("system", HELP_TEXT)
+        setView("log")
+        setMenuOpen(false)
+        return
+      case 4: // Quit
+        renderer.destroy()
+        process.exit(0)
+        return
+    }
+  }
+
+  function handleDoneSelection(i: number): void {
+    const skipped = (files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").map((f) => f.path)
+    // options: 0 go back over skipped, 1 refresh, 2 pick another, 3 quit
+    if (i === 0) {
+      if (skipped.length === 0) return
+      setQueue(skipped)
+      setView("review")
+      if (skipped.length > 0) goToFile(skipped[0])
+      return
+    }
+    if (i === 1) {
+      load()
+      setView("review")
+      return
+    }
+    if (i === 2) {
+      openProjectPicker()
+      return
+    }
+    if (i === 3) {
+      renderer.destroy()
+      process.exit(0)
+      return
+    }
+  }
+
+  function doneOptions(): SelectOption[] {
+    const skippedCount = (files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length
+    const askedCount = (files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length
+    const total = files()?.length ?? 0
+    const opts: SelectOption[] = []
+    if (skippedCount > 0) opts.push({ name: `Go back over the ${skippedCount} skipped files`, description: "", value: 0 })
+    opts.push({ name: "Refresh (check for new changes)", description: "", value: 1 })
+    opts.push({ name: "Pick another project", description: "", value: 2 })
+    opts.push({ name: "Quit", description: "", value: 3 })
+    return opts
+  }
+
+  function activateAction(i: number): void {
+    const cur = file()?.path
+    if (cur === undefined) return
+    if (i === 0) {
+      // Back
+      if (!isFirstFile()) prevFile()
+      return
+    }
+    if (i === 1) {
+      markAsked(cur)
+      setAction(4)
+      void askAgent(QUESTIONS.slow(cur))
+      return
+    }
+    if (i === 2) {
+      markAsked(cur)
+      setAction(4)
+      void askAgent(QUESTIONS.messy(cur))
+      return
+    }
+    if (i === 3) {
+      markAsked(cur)
+      setAction(4)
+      void askAgent(QUESTIONS.safe(cur))
+      return
+    }
+    if (i === 4) {
+      nextFile()
+      return
+    }
+  }
+
+  function footerHints(): string {
+    const hasText = (inputRef?.value ?? "") !== ""
+    if (hasText) return "Enter send · Esc clear · Ctrl+C quit"
+    if (view() === "projects") return "Up/Down choose · Enter open · Esc back · Ctrl+C quit"
+    if (view() === "tree") return "Up/Down move · Enter open · Esc menu · Ctrl+C quit"
+    if (view() === "log") return "Esc menu · Ctrl+C quit"
+    if (view() === "done") return "Up/Down choose · Enter go · Ctrl+C quit"
+    if (menuOpen()) return "Up/Down choose · Enter go · Esc close · Ctrl+C quit"
+    if (allFilesOpen()) return "Up/Down choose · Enter jump · Esc close · Ctrl+C quit"
+    // review
+    return "Left/Right choose · Enter go · Up/Down scroll · Esc menu · Ctrl+C quit"
+  }
 
   // Keep the log pinned to the bottom as entries arrive.
   createEffect(() => {
     transcript()
     view()
     logRef?.scrollTo({ x: 0, y: Infinity })
+  })
+
+  // Reset diff scroll to top whenever the displayed patch changes.
+  createEffect(() => {
+    patch()
+    setTimeout(() => {
+      try { diffScrollRef?.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ }
+    }, 50)
+  })
+
+  // Reset diff scroll to top whenever the displayed patch changes.
+  createEffect(() => {
+    patch()
+    try { diffScrollRef?.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ }
   })
 
   const options = createMemo<SelectOption[]>(() =>
@@ -1154,125 +1378,186 @@ export function ReviewApp() {
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
 
+      {/* Projects view */}
       <Show
         when={view() === "projects"}
         fallback={
+          /* other views below */
           <Show
-            when={view() === "log"}
+            when={view() === "done"}
             fallback={
               <Show
-                when={view() === "tree"}
+                when={view() === "log"}
                 fallback={
                   <Show
-                    when={hasProject()}
+                    when={view() === "tree"}
                     fallback={
-                      <box flexGrow={1} paddingLeft={1}>
-                        <text fg={COLORS.dim}> No project open. Press Esc, then pick Pick another project.</text>
-                      </box>
+                      <Show
+                        when={hasProject()}
+                        fallback={
+                          <box flexGrow={1} paddingLeft={1}>
+                            <text fg={COLORS.dim}>No project open. Press Esc, then pick Pick another project.</text>
+                          </box>
+                        }
+                      >
+                        <Show when={!menuOpen() && !allFilesOpen()}>
+                        {/* Review view */}
+                        <box flexGrow={1} flexDirection="column">
+                          {/* Step header */}
+                          <box height={1} flexShrink={0} paddingLeft={1}>
+                            <text fg={COLORS.bright}>{stepHeader()}</text>
+                          </box>
+                          <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+                          {/* Diff */}
+                          <scrollbox
+                            ref={(el: ScrollBoxRenderable) => {
+                              diffScrollRef = el
+                              try { el.afterLayout(() => { try { el.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ } }) } catch { /* ignore */ }
+                              setTimeout(() => { try { el.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ } }, 100)
+                            }}
+                            flexGrow={1}
+                            backgroundColor={COLORS.bg}
+                          >
+                            <Show when={!loadError()} fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}>
+                              <Show
+                                when={file()}
+                                fallback={
+                                  <box flexDirection="column">
+                                    <Show when={files() !== null && (files()?.length ?? 0) === 0}>
+                                      <text fg={COLORS.bright}>{`Nothing to review: there are no changes in ${cwdBase()}.`}</text>
+                                      <box height={1} />
+                                      <text fg={COLORS.dim}>Refresh (check for new changes)</text>
+                                      <text fg={COLORS.dim}>Pick another project</text>
+                                      <text fg={COLORS.dim}>Quit</text>
+                                    </Show>
+                                    <Show when={files() === null}>
+                                      <text fg={COLORS.dim}>Loading changes…</text>
+                                    </Show>
+                                    <Show when={files() !== null && (files()?.length ?? 0) > 0}>
+                                      <text fg={COLORS.dim}>No local changes</text>
+                                    </Show>
+                                  </box>
+                                }
+                              >
+                                <diff
+                                  ref={(el: any) => (diffRef = el)}
+                                  width="100%"
+                                  diff={patch()}
+                                  view="unified"
+                                  filetype={filetype()}
+                                  showLineNumbers={true}
+                                />
+                              </Show>
+                            </Show>
+                          </scrollbox>
+                          {/* Answer pane */}
+                          <Show when={answerOpen()}>
+                            <box height="40%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
+                              <text fg={COLORS.dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "…" : lastQuestion()}  ·  ${activeLabel()}`}</text>
+                              <scrollbox
+                                ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
+                                flexGrow={1}
+                                backgroundColor={COLORS.bg}
+                              >
+                                <text wrapMode="word" fg={COLORS.text}>{lastAnswer()}</text>
+                              </scrollbox>
+                            </box>
+                          </Show>
+                          {/* Action bar */}
+                          <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
+                            <For each={ACTION_ITEMS}>
+                              {(item, i) => {
+                                const disabled = () => i() === 0 && isFirstFile()
+                                const selected = () => action() === i() && !disabled()
+                                return (
+                                  <Show when={!(i() === 0 && isFirstFile())}>
+                                    <text fg={selected() ? COLORS.bg : COLORS.dim}>{selected() ? "█" : " "}</text>
+                                    <text fg={selected() ? COLORS.bg : COLORS.text}>{selected() ? `[ ${item} ]` : `[ ${item} ]`}</text>
+                                    <text fg={COLORS.dim}>{"  "}</text>
+                                  </Show>
+                                )
+                              }}
+                            </For>
+                          </box>
+                          <box height={1} flexShrink={0} border={["top"]} borderColor={COLORS.rule} />
+                        </box>
+                        </Show>
+                      </Show>
                     }
                   >
-                    <box flexGrow={1} flexDirection="row">
-                      <select
-                        ref={(el: SelectRenderable) => {
-                          selectRef = el
-                        }}
-                        width="38%"
-                        height="100%"
-                        options={options()}
-                        showDescription={true}
-                        showScrollIndicator={true}
+                    {/* Tree view */}
+                    <Show
+                      when={hasProject()}
+                      fallback={
+                        <box flexGrow={1} paddingLeft={1}>
+                          <text fg={COLORS.dim}>No project open. Press Esc, then pick Pick another project.</text>
+                        </box>
+                      }
+                    >
+                      <scrollbox
+                        ref={(el: ScrollBoxRenderable) => (treeRef = el)}
+                        flexGrow={1}
                         backgroundColor={COLORS.bg}
-                        focusedBackgroundColor={COLORS.bg}
-                        textColor={COLORS.text}
-                        focusedTextColor={COLORS.bright}
-                        selectedBackgroundColor={COLORS.selectedBg}
-                        selectedTextColor={COLORS.bright}
-                        descriptionColor={COLORS.dim}
-                        selectedDescriptionColor={COLORS.dim}
-                      />
-
-                      <box flexGrow={1} height="100%" paddingLeft={1} flexDirection="column">
-                        <Show when={!loadError()} fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}>
-                          <Show
-                            when={file()}
-                            fallback={<text fg={COLORS.dim}>{` ${files() === null ? "Loading changes…" : "No local changes"}`}</text>}
-                          >
-                            <scrollbox
-                              ref={(el: ScrollBoxRenderable) => (diffScrollRef = el)}
-                              flexGrow={1}
-                              backgroundColor={COLORS.bg}
-                            >
-                              <diff
-                                ref={(el: any) => (diffRef = el)}
-                                width="100%"
-                                diff={patch()}
-                                view="unified"
-                                filetype={filetype()}
-                                showLineNumbers={true}
-                              />
-                            </scrollbox>
-                          </Show>
-                        </Show>
-                        <Show when={answerOpen()}>
-                          <box height="35%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
-                            <text fg={COLORS.dim}>{`you: ${lastQuestion().length > 40 ? lastQuestion().slice(0, 40) + "…" : lastQuestion()} · ${activeLabel()} · [scrolling: ${scrollTarget()}]`}</text>
-                            <scrollbox
-                              ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
-                              flexGrow={1}
-                              backgroundColor={COLORS.bg}
-                            >
-                              <text wrapMode="word" fg={COLORS.text}>{lastAnswer()}</text>
-                            </scrollbox>
-                          </box>
-                        </Show>
-                      </box>
-                    </box>
+                        paddingLeft={1}
+                      >
+                        <For each={treeLines()}>
+                          {(line, index) => (
+                            <text fg={index() === treeIndex() ? COLORS.bright : line.isDir ? COLORS.dim : COLORS.text}>
+                              {`${index() === treeIndex() ? "▸ " : "  "}${line.text}`}
+                            </text>
+                          )}
+                        </For>
+                      </scrollbox>
+                    </Show>
                   </Show>
                 }
               >
-                <Show
-                  when={hasProject()}
-                  fallback={
-                    <box flexGrow={1} paddingLeft={1}>
-                      <text fg={COLORS.dim}> No project open. Press Esc, then pick Pick another project.</text>
-                    </box>
-                  }
+                {/* Log view */}
+                <scrollbox
+                  ref={(el: ScrollBoxRenderable) => (logRef = el)}
+                  flexGrow={1}
+                  backgroundColor={COLORS.bg}
+                  paddingLeft={1}
                 >
-                  <scrollbox
-                    ref={(el: ScrollBoxRenderable) => (treeRef = el)}
-                    flexGrow={1}
-                    backgroundColor={COLORS.bg}
-                    paddingLeft={1}
-                  >
-                    <For each={treeLines()}>
-                      {(line, index) => (
-                        <text fg={index() === treeIndex() ? COLORS.bright : line.isDir ? COLORS.dim : COLORS.text}>
-                          {`${index() === treeIndex() ? "▸ " : "  "}${line.text}`}
-                        </text>
-                      )}
-                    </For>
-                  </scrollbox>
-                </Show>
+                  <For each={transcript()}>
+                    {(entry) => (
+                      <For each={entry.text.split("\n")}>
+                        {(line) => <text fg={ENTRY_FG[entry.kind]}>{line === "" ? " " : line}</text>}
+                      </For>
+                    )}
+                  </For>
+                </scrollbox>
               </Show>
             }
           >
-            <scrollbox
-              ref={(el: ScrollBoxRenderable) => (logRef = el)}
-              flexGrow={1}
-              backgroundColor={COLORS.bg}
-              paddingLeft={1}
-            >
-              <For each={transcript()}>
-                {(entry) => (
-                  <For each={entry.text.split("\n")}>
-                    {(line) => <text fg={ENTRY_FG[entry.kind]}>{line === "" ? " " : line}</text>}
-                  </For>
-                )}
-              </For>
-            </scrollbox>
+            {/* Done view */}
+            <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+              <text fg={COLORS.bright}>All done.</text>
+              <text fg={COLORS.dim}>{` You looked at ${files()?.length ?? 0} files:  asked about ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length},  skipped ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length} without asking.`}</text>
+              <Show when={(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length === 0}>
+                <text fg={COLORS.dim}>You asked about every file.</text>
+              </Show>
+              <box height={1} />
+              <select
+                ref={(el: SelectRenderable) => (menuSelectRef = el)}
+                flexGrow={1}
+                options={doneOptions()}
+                showDescription={true}
+                showScrollIndicator={true}
+                backgroundColor={COLORS.bg}
+                focusedBackgroundColor={COLORS.bg}
+                textColor={COLORS.text}
+                focusedTextColor={COLORS.bright}
+                selectedBackgroundColor={COLORS.selectedBg}
+                selectedTextColor={COLORS.bright}
+                descriptionColor={COLORS.dim}
+                selectedDescriptionColor={COLORS.dim}
+              />
+            </box>
           </Show>
         }
       >
+        {/* Projects view */}
         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
           <text fg={COLORS.bright}>Which project do you want to review?</text>
           <box height={1} />
@@ -1314,6 +1599,52 @@ export function ReviewApp() {
         </box>
       </Show>
 
+      {/* Menu overlay */}
+      <Show when={menuOpen()}>
+        <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+          <text fg={COLORS.bright}>Menu</text>
+          <box height={1} />
+          <select
+            ref={(el: SelectRenderable) => (menuSelectRef = el)}
+            flexGrow={1}
+            options={menuOptions()}
+            showDescription={true}
+            showScrollIndicator={true}
+            backgroundColor={COLORS.bg}
+            focusedBackgroundColor={COLORS.bg}
+            textColor={COLORS.text}
+            focusedTextColor={COLORS.bright}
+            selectedBackgroundColor={COLORS.selectedBg}
+            selectedTextColor={COLORS.bright}
+            descriptionColor={COLORS.dim}
+            selectedDescriptionColor={COLORS.dim}
+          />
+        </box>
+      </Show>
+
+      {/* All files overlay */}
+      <Show when={allFilesOpen()}>
+        <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+          <text fg={COLORS.bright}>All files</text>
+          <box height={1} />
+          <select
+            ref={(el: SelectRenderable) => (allFilesSelectRef = el)}
+            flexGrow={1}
+            options={allFilesOptions()}
+            showDescription={true}
+            showScrollIndicator={true}
+            backgroundColor={COLORS.bg}
+            focusedBackgroundColor={COLORS.bg}
+            textColor={COLORS.text}
+            focusedTextColor={COLORS.bright}
+            selectedBackgroundColor={COLORS.selectedBg}
+            selectedTextColor={COLORS.bright}
+            descriptionColor={COLORS.dim}
+            selectedDescriptionColor={COLORS.dim}
+          />
+        </box>
+      </Show>
+
       <Show
         when={suggestionWindow().show}
         fallback={<box height={1} flexShrink={0} border={["top"]} borderColor={COLORS.rule} />}
@@ -1339,7 +1670,7 @@ export function ReviewApp() {
       </Show>
 
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={mode() === "browse" ? COLORS.dim : COLORS.bright}>{mode() === "browse" ? "· " : "> "}</text>
+        <text fg={COLORS.bright}>{"> "}</text>
         <input
           ref={(el: InputRenderable) => {
             inputRef = el
@@ -1350,17 +1681,23 @@ export function ReviewApp() {
           focusedBackgroundColor={COLORS.bg}
           textColor={COLORS.bright}
           focusedTextColor={COLORS.bright}
-          placeholder={mode() === "browse" ? "press i to type, / for commands, ? for help" : "type / for commands, or ask the agent…"}
+          placeholder="or type your own question here, then press Enter"
           placeholderColor={COLORS.dim}
           onInput={(value: string) => setInputValue(value)}
         />
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={COLORS.dim}>{footerHints()}</text>
-        <box flexGrow={1} />
-        <Show when={status() !== ""}>
-          <text fg={COLORS.dim}>{status()}</text>
+        <Show when={busy()} fallback={
+          <>
+            <text fg={COLORS.dim}>{footerHints()}</text>
+            <box flexGrow={1} />
+            <Show when={status() !== ""}>
+              <text fg={COLORS.dim}>{status()}</text>
+            </Show>
+          </>
+        }>
+          <text fg={COLORS.dim}>{`${status()} · Ctrl+C quit`}</text>
         </Show>
       </box>
     </box>
@@ -1371,11 +1708,8 @@ export async function launch(startDir?: string): Promise<void> {
   try {
     enterProject(startDir ?? process.cwd())
   } catch {
-    // ignore; picker will be shown if no project
+    // ignore
   }
-  // Initialize the tree-sitter client up front (before the render loop takes
-  // over) so the diff pane can highlight. Failure is non-fatal: renderables
-  // fall back to plain text.
   await getTreeSitterClient().initialize().catch(() => {})
   await render(() => <ReviewApp />, { exitOnCtrlC: true })
 }
