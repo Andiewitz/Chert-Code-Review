@@ -27,7 +27,8 @@ import {
   findReposBelow,
   forgetProject,
   loadRecent,
-  projectSummary,
+  parseCdArgument,
+  resolveProject,
   resolveProjectRoot,
 } from "../projects"
 import { QUESTIONS } from "../questions"
@@ -76,8 +77,9 @@ const COMMAND_DEFS: CommandDef[] = [
   { name: "refresh", usage: "/refresh", description: "re-scan the working tree" },
   { name: "open", usage: "/open <query>", description: "jump to a file (path match)", takesArg: true },
   { name: "run", usage: "/run <command>", description: "run a shell command in the current project", takesArg: true },
-  { name: "cd", usage: "/cd <dir>", description: "switch project directory", takesArg: true },
-  { name: "project", usage: "/project [path]", description: "open project picker or switch to a project", takesArg: true },
+  { name: "cd", usage: "/cd <name or path>", description: "switch project directory", takesArg: true },
+  { name: "projects", usage: "/projects", description: "list saved projects" },
+  { name: "forget", usage: "/forget <name or path>", description: "remove a saved project", takesArg: true },
   { name: "cwd", usage: "/cwd", description: "show the current project" },
   { name: "tree", usage: "/tree", description: "show the whole project tree" },
   { name: "connect", usage: "/connect [provider [key]]", description: "connector status / save a provider key", takesArg: true },
@@ -167,7 +169,7 @@ function toRealPath(path: string): string {
   }
 }
 
-type MainView = "review" | "tree" | "log" | "projects" | "done"
+type MainView = "review" | "tree" | "log" | "done"
 type PickerKind = "recent" | "found"
 interface PickerItem {
   path: string
@@ -193,7 +195,7 @@ export function ReviewApp() {
   const [patch, setPatch] = createSignal("")
   const [treeLines, setTreeLines] = createSignal<TreeLine[]>([])
   const [treeIndex, setTreeIndex] = createSignal(0)
-  const [view, setView] = createSignal<MainView>(initialRoot ? "review" : "projects")
+  const [view, setView] = createSignal<MainView>("review")
   const [previousView, setPreviousView] = createSignal<"review" | "tree" | "log">("review")
   const [hasProject, setHasProject] = createSignal(initialRoot !== undefined)
   const [branch, setBranch] = createSignal("no commits")
@@ -206,9 +208,7 @@ export function ReviewApp() {
   const [pickerOpen, setPickerOpen] = createSignal(false)
   const [suggestionIndex, setSuggestionIndex] = createSignal(0)
 
-  const [projectPickerItems, setProjectPickerItems] = createSignal<PickerItem[]>([])
-  const [projectPickerIndex, setProjectPickerIndex] = createSignal(0)
-  const [highlightedSummary, setHighlightedSummary] = createSignal<{ branch: string; changedCount: number } | undefined>(undefined)
+  let previousProject: string | null = null
 
   // Phase 3 guided review state
   const [action, setAction] = createSignal(4)
@@ -332,131 +332,6 @@ export function ReviewApp() {
     if (!cmd) return
     setPromptValue(`/${cmd.name}${cmd.takesArg ? " " : ""}`)
     setPickerOpen(false)
-  }
-
-  function refreshProjectPicker(resetIndex = false): void {
-    try {
-      const recents = loadRecent()
-      const recentReals = new Set(recents.map((r) => toRealPath(r.path)))
-      const recentItems: PickerItem[] = recents.map((r) => ({
-        path: resolve(r.path),
-        name: basename(resolve(r.path)) || resolve(r.path),
-        kind: "recent" as const,
-      }))
-      const foundItems: PickerItem[] = []
-      const scanBases = [cwd()]
-      if (hasProject()) {
-        try { scanBases.push(dirname(cwd())) } catch { /* ignore */ }
-      }
-      const seen = new Set(recentReals)
-      for (const base of scanBases) {
-        for (const pp of findReposBelow(base)) {
-          try {
-            const abs = resolve(pp)
-            const real = toRealPath(abs)
-            if (seen.has(real)) continue
-            seen.add(real)
-            foundItems.push({ path: abs, name: basename(abs) || abs, kind: "found" })
-          } catch { /* ignore */ }
-        }
-      }
-      foundItems.sort((a, b) => a.name.localeCompare(b.name))
-      const ordered = [...recentItems, ...foundItems]
-      setProjectPickerItems(ordered)
-      const next = resetIndex ? 0 : Math.max(0, Math.min(projectPickerIndex(), Math.max(0, ordered.length - 1)))
-      setProjectPickerIndex(next)
-      projectPickerSelectRef?.setSelectedIndex(next)
-      try {
-        const item = ordered[next]
-        setHighlightedSummary(item ? projectSummary(item.path) : undefined)
-      } catch {
-        setHighlightedSummary(undefined)
-      }
-    } catch {
-      setProjectPickerItems([])
-      setProjectPickerIndex(0)
-      setHighlightedSummary(undefined)
-    }
-  }
-
-  function openProjectPicker(): void {
-    if (view() !== "projects") setPreviousView(view() as "review" | "tree" | "log")
-    refreshProjectPicker(true)
-    setView("projects")
-  }
-
-  function openProjectAt(target: string): boolean {
-    try {
-      const expanded = expandPath(target, cwd())
-      const root = enterProject(expanded)
-      if (root === undefined) {
-        const msg = `that folder isn't a git project: ${expanded}`
-        if (view() === "projects") {
-          setStatus(msg)
-        } else {
-          addEntry("error", msg)
-          setView("log")
-        }
-        return false
-      }
-      setCwd(root)
-      setHasProject(true)
-      load()
-      setView("review")
-      setStatus(`opened ${basename(root) || root}`)
-      addEntry("system", `project: ${root}`)
-      return true
-    } catch (error) {
-      const msg = `open failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`
-      if (view() === "projects") setStatus(msg)
-      else {
-        addEntry("error", msg)
-        setView("log")
-      }
-      return false
-    }
-  }
-
-  function selectProjectPickerIndex(index: number): void {
-    const list = projectPickerItems()
-    if (list.length === 0) {
-      setHighlightedSummary(undefined)
-      return
-    }
-    const i = Math.max(0, Math.min(index, list.length - 1))
-    setProjectPickerIndex(i)
-    projectPickerSelectRef?.setSelectedIndex(i)
-    try {
-      const item = list[i]
-      setHighlightedSummary(item ? projectSummary(item.path) : undefined)
-    } catch {
-      setHighlightedSummary(undefined)
-    }
-  }
-
-  function openSelectedProject(): void {
-    const item = projectPickerItems()[projectPickerIndex()]
-    if (!item) return
-    openProjectAt(item.path)
-  }
-
-  function forgetSelectedProject(): void {
-    const item = projectPickerItems()[projectPickerIndex()]
-    if (!item) {
-      setStatus("no project selected")
-      return
-    }
-    if (item.kind !== "recent") {
-      setStatus("this one isn't in your recent list")
-      return
-    }
-    try {
-      forgetProject(item.path)
-    } catch {
-      // ignore
-    }
-    refreshProjectPicker(true)
-    setStatus("removed from the list (your files were not touched)")
   }
 
   // Synchronous loads
@@ -656,8 +531,6 @@ export function ReviewApp() {
 
   if (initialRoot) {
     load()
-  } else {
-    refreshProjectPicker()
   }
 
   // Menu / all-files select options
@@ -682,16 +555,40 @@ export function ReviewApp() {
     })
   })
 
+  function listProjects(): void {
+    const recents = loadRecent()
+    if (recents.length === 0) {
+      addEntry("system", "No saved projects yet. Type /cd and a folder path.")
+      setView("log")
+      return
+    }
+    const lines = recents.map((r) => {
+      const name = basename(r.path)
+      return `${name.padEnd(20)}  ${displayPath(r.path)}`
+    })
+    addEntry("system", lines.join("\n"))
+    setView("log")
+  }
+
+  const cdMatches = createMemo(() => {
+    const v = inputValue()
+    if (!v.startsWith("/cd ")) return null
+    const q = v.slice(4).trim()
+    const recents = loadRecent()
+    let matches = recents
+    if (q !== "") {
+      const lower = q.toLowerCase()
+      matches = recents.filter((r) => basename(r.path).toLowerCase().includes(lower))
+    }
+    return matches.slice(0, 4).map((r) => basename(r.path))
+  })
+
   function submit(): void {
     const raw = (inputRef?.value ?? "").trim()
     if (raw === "") return
     clearInput()
     if (raw.startsWith("/")) {
       runCommand(raw.slice(1).trim())
-      return
-    }
-    if (view() === "projects") {
-      openProjectAt(raw)
       return
     }
     if (busy()) {
@@ -781,7 +678,7 @@ export function ReviewApp() {
         setAnswerOpen(true)
         setAction(4)
         setStatus("")
-      } else if (v === "tree" || v === "projects") {
+      } else if (v === "tree") {
         setStatus("answer ready, press a in review")
       } else {
         setStatus("")
@@ -795,8 +692,10 @@ export function ReviewApp() {
       setView("log")
       return
     }
-    const [name, ...restParts] = line.split(/\s+/)
-    const rest = restParts.join(" ")
+    const trimmed = line.trim()
+    const firstSpace = trimmed.search(/\s/)
+    const name = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace)
+    const rest = firstSpace === -1 ? "" : trimmed.slice(firstSpace).trim()
     let def = resolveCommand(name)
     if (!def) {
       const t = name.toLowerCase()
@@ -885,39 +784,92 @@ export function ReviewApp() {
       }
       case "cd": {
         if (rest === "") {
-          addEntry("system", `project: ${cwd()}`)
-          setView("log")
+          listProjects()
           return
         }
-        try {
-          const target = expandPath(rest, cwd())
+        if (rest === "-") {
+          if (previousProject === null) {
+            addEntry("error", "No previous project.")
+            setView("log")
+            return
+          }
+          const target = previousProject
+          const savedCwd = hasProject() ? cwd() : null
           const root = enterProject(target)
           if (root === undefined) {
             addEntry("error", `that folder isn't a git project: ${target}`)
             setView("log")
             return
           }
+          if (savedCwd !== null && savedCwd !== root) previousProject = savedCwd
           setCwd(root)
           setHasProject(true)
           load()
-          if (root !== target) {
-            addEntry("system", `project: ${root} (repo root of ${target})`)
-          } else {
-            addEntry("system", `project: ${root}`)
-          }
-          setStatus("")
-        } catch (error) {
-          addEntry("error", `cd failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`)
-          setView("log")
-        }
-        return
-      }
-      case "project": {
-        if (rest === "") {
-          openProjectPicker()
+          setView("review")
+          setStatus(`opened ${basename(root) || root}`)
+          addEntry("system", `project: ${root}`)
           return
         }
-        openProjectAt(rest)
+        const query = parseCdArgument(rest)
+        const result = resolveProject(query)
+        if (result.kind === "open") {
+          const savedCwd = hasProject() ? cwd() : null
+          if (savedCwd !== null && savedCwd !== result.root) previousProject = savedCwd
+          setCwd(result.root)
+          setHasProject(true)
+          load()
+          setView("review")
+          setStatus(`opened ${result.name}`)
+          addEntry("system", `project: ${result.root}`)
+          return
+        }
+        if (result.kind === "ambiguous") {
+          const lines = result.matches.map((m) => `  ${basename(m.path).padEnd(20)}  ${displayPath(m.path)}`)
+          addEntry("system", `Several saved projects match "${query}":\n${lines.join("\n")}\ntype more letters or the full path`)
+          setView("log")
+          return
+        }
+        if (result.kind === "contains") {
+          addEntry("system", `That folder isn't a git project, but it contains: ${result.repoNames.join(", ")}. Try /cd ${result.repoNames[0]}.`)
+          setView("log")
+          return
+        }
+        addEntry("error", `No project or folder called "${query}". Type /cd alone to see your saved projects.`)
+        setView("log")
+        return
+      }
+      case "projects": {
+        listProjects()
+        return
+      }
+      case "forget": {
+        if (rest === "") {
+          addEntry("error", "usage: /forget <name or path>")
+          setView("log")
+          return
+        }
+        // /forget accepts a name or a path; try the raw name first.
+        const rawName = rest.trim()
+        const q = parseCdArgument(rest)
+        const recents = loadRecent()
+        let match = recents.find((r) => basename(r.path).toLowerCase() === rawName.toLowerCase() || r.path === q || basename(r.path).toLowerCase() === q.toLowerCase())
+        if (match === undefined) {
+          const matches = recents.filter((r) => basename(r.path).toLowerCase().includes(q.toLowerCase()))
+          if (matches.length === 1) match = matches[0]
+          else if (matches.length > 1) {
+            addEntry("error", `Several saved projects match "${q}". Type more letters.`)
+            setView("log")
+            return
+          }
+        }
+        if (match === undefined) {
+          addEntry("error", `No saved project called "${q}".`)
+          setView("log")
+          return
+        }
+        forgetProject(match.path)
+        addEntry("system", "removed from your list (your files were not touched)")
+        setView("log")
         return
       }
       case "cwd":
@@ -1081,15 +1033,18 @@ export function ReviewApp() {
     }
 
     if (key.name === "tab") {
-      key.preventDefault()
-      if (showList && visibleSuggestions().length > 0) {
-        acceptSuggestion(visibleSuggestions()[Math.min(suggestionIndex(), visibleSuggestions().length - 1)])
+      const matches = cdMatches()
+      if (matches !== null && matches.length > 0) {
+        key.preventDefault()
+        const first = matches[0]
+        const recents = loadRecent()
+        const rec = recents.find((r) => basename(r.path) === first)
+        const name = rec ? basename(rec.path) : first
+        const completed = name.includes(" ") ? `"${name}"` : name
+        setPromptValue(`/cd ${completed} `)
         return
       }
-      // cycle review -> tree -> log -> review
-      const next = view() === "review" ? "tree" : view() === "tree" ? "log" : view() === "log" ? "review" : "review"
-      if (next === "tree") { if (hasProject()) loadTree(); else setView("tree") }
-      else setView(next)
+      // cd completion not applicable: Tab does nothing
       return
     }
 
@@ -1104,7 +1059,6 @@ export function ReviewApp() {
         return
       }
       // empty box: activate highlighted action / open selection
-      if (view() === "projects") { openSelectedProject(); return }
       if (view() === "tree") { openTreeSelection(); return }
       if (view() === "done") {
         // handled by select below via enter on select? use menuIndex
@@ -1127,19 +1081,6 @@ export function ReviewApp() {
 
     // Empty box: screen keys
     if (!hasText) {
-      if (view() === "projects") {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          selectProjectPickerIndex(projectPickerIndex() + (key.name === "up" ? -1 : 1))
-          return
-        }
-        if (key.name === "delete" || key.name === "Delete" || key.sequence === "\u001B[3~") {
-          key.preventDefault()
-          forgetSelectedProject()
-          return
-        }
-        return
-      }
       if (view() === "review") {
         if (key.name === "left" || key.name === "right") {
           key.preventDefault()
@@ -1222,7 +1163,7 @@ export function ReviewApp() {
         return
       case 1: // Pick another project
         setMenuOpen(false)
-        openProjectPicker()
+        listProjects()
         return
       case 2: // Refresh changes
         setMenuOpen(false)
@@ -1256,7 +1197,7 @@ export function ReviewApp() {
       return
     }
     if (i === 2) {
-      openProjectPicker()
+      listProjects()
       return
     }
     if (i === 3) {
@@ -1316,7 +1257,6 @@ export function ReviewApp() {
   function footerHints(): string {
     const hasText = (inputRef?.value ?? "") !== ""
     if (hasText) return "Enter send · Esc clear · Ctrl+C quit"
-    if (view() === "projects") return "Up/Down choose · Enter open · Esc back · Ctrl+C quit"
     if (view() === "tree") return "Up/Down move · Enter open · Esc menu · Ctrl+C quit"
     if (view() === "log") return "Esc menu · Ctrl+C quit"
     if (view() === "done") return "Up/Down choose · Enter go · Ctrl+C quit"
@@ -1356,14 +1296,6 @@ export function ReviewApp() {
     })),
   )
 
-  const projectPickerOptions = createMemo<SelectOption[]>(() =>
-    projectPickerItems().map((item, index) => ({
-      name: item.name,
-      description: `${displayPath(item.path)} · ${item.kind === "recent" ? "recent" : "found here"}`,
-      value: index,
-    })),
-  )
-
   const headerInfo = createMemo(() => {
     if (!hasProject()) return "no project selected"
     const project = cwdBase()
@@ -1399,232 +1331,152 @@ export function ReviewApp() {
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
 
-      {/* Projects view */}
-      <Show
-        when={view() === "projects"}
-        fallback={
-          /* other views below */
-          <Show
-            when={view() === "done"}
-            fallback={
-              <Show
-                when={view() === "log"}
-                fallback={
-                  <Show
-                    when={view() === "tree"}
-                    fallback={
+      <Show when={view() === "done"} fallback={
+        <Show when={view() === "log"} fallback={
+          <Show when={view() === "tree"} fallback={
+            <Show when={!menuOpen() && !allFilesOpen()}>
+              <Show when={hasProject()} fallback={
+                <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+                  <text fg={COLORS.dim}>No project open. Type /cd and a project name or folder, for example /cd myapp</text>
+                  <box height={1} />
+                  <For each={loadRecent().slice(0, 8)}>
+                    {(r) => <text fg={COLORS.dim}>{`  ${basename(r.path).padEnd(20)}  ${displayPath(r.path)}`}</text>}
+                  </For>
+                </box>
+              }>
+                <box flexGrow={1} flexDirection="column">
+                  <Show when={(files()?.length ?? 0) > 0}>
+                    <box height={1} flexShrink={0} paddingLeft={1}>
+                      <text fg={COLORS.bright}>{stepHeader()}</text>
+                    </box>
+                    <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+                  </Show>
+                  <scrollbox
+                    ref={(el: ScrollBoxRenderable) => { diffScrollRef = el }}
+                    flexGrow={1}
+                    backgroundColor={COLORS.bg}
+                  >
+                    <Show when={!loadError()} fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}>
                       <Show
-                        when={hasProject()}
+                        when={file()}
                         fallback={
-                          <box flexGrow={1} paddingLeft={1}>
-                            <text fg={COLORS.dim}>No project open. Press Esc, then pick Pick another project.</text>
+                          <box flexDirection="column">
+                            <Show when={files() !== null && (files()?.length ?? 0) === 0}>
+                              <text fg={COLORS.bright}>{`Nothing to review: there are no changes in ${cwdBase()}.`}</text>
+                              <box height={1} />
+                              <text fg={COLORS.dim}>Refresh (check for new changes)</text>
+                              <text fg={COLORS.dim}>Pick another project</text>
+                              <text fg={COLORS.dim}>Quit</text>
+                            </Show>
+                            <Show when={files() === null}>
+                              <text fg={COLORS.dim}>Loading changes…</text>
+                            </Show>
+                            <Show when={files() !== null && (files()?.length ?? 0) > 0}>
+                              <text fg={COLORS.dim}>No local changes</text>
+                            </Show>
                           </box>
                         }
                       >
-                        <Show when={!menuOpen() && !allFilesOpen()}>
-                        {/* Review view */}
-                        <box flexGrow={1} flexDirection="column">
-                          {/* Step header */}
-                          <Show when={(files()?.length ?? 0) > 0}>
-                            <box height={1} flexShrink={0} paddingLeft={1}>
-                              <text fg={COLORS.bright}>{stepHeader()}</text>
-                            </box>
-                            <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
-                          </Show>
-                          {/* Diff */}
-                          <scrollbox
-                            ref={(el: ScrollBoxRenderable) => {
-                              diffScrollRef = el
-                              try { el.afterLayout(() => { try { el.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ } }) } catch { /* ignore */ }
-                              setTimeout(() => { try { el.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ } }, 100)
-                            }}
-                            flexGrow={1}
-                            backgroundColor={COLORS.bg}
-                          >
-                            <Show when={!loadError()} fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}>
-                              <Show
-                                when={file()}
-                                fallback={
-                                  <box flexDirection="column">
-                                    <Show when={files() !== null && (files()?.length ?? 0) === 0}>
-                                      <text fg={COLORS.bright}>{`Nothing to review: there are no changes in ${cwdBase()}.`}</text>
-                                      <box height={1} />
-                                      <text fg={COLORS.dim}>Refresh (check for new changes)</text>
-                                      <text fg={COLORS.dim}>Pick another project</text>
-                                      <text fg={COLORS.dim}>Quit</text>
-                                    </Show>
-                                    <Show when={files() === null}>
-                                      <text fg={COLORS.dim}>Loading changes…</text>
-                                    </Show>
-                                    <Show when={files() !== null && (files()?.length ?? 0) > 0}>
-                                      <text fg={COLORS.dim}>No local changes</text>
-                                    </Show>
-                                  </box>
-                                }
-                              >
-                                <diff
-                                  ref={(el: any) => (diffRef = el)}
-                                  width="100%"
-                                  diff={patch()}
-                                  view="unified"
-                                  filetype={filetype()}
-                                  showLineNumbers={true}
-                                />
-                              </Show>
-                            </Show>
-                          </scrollbox>
-                          {/* Answer pane */}
-                          <Show when={answerOpen() && answerFile() === (file()?.path ?? "")}>
-                            <box height="40%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
-                              <text fg={COLORS.dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "…" : lastQuestion()}  ·  ${activeLabel()}`}</text>
-                              <scrollbox
-                                ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
-                                flexGrow={1}
-                                backgroundColor={COLORS.bg}
-                              >
-                                <text wrapMode="word" fg={busy() ? COLORS.dim : (answerIsError() ? COLORS.danger : COLORS.text)}>{busy() ? status() : lastAnswer()}</text>
-                              </scrollbox>
-                            </box>
-                          </Show>
-                          {/* Action bar */}
-                          <Show when={(files()?.length ?? 0) > 0}>
-                          <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
-                            <For each={ACTION_ITEMS}>
-                              {(item, i) => {
-                                const disabled = () => i() === 0 && isFirstFile()
-                                const selected = () => action() === i() && !disabled()
-                                return (
-                                  <Show when={!(i() === 0 && isFirstFile())}>
-                                    <text fg={selected() ? COLORS.bg : COLORS.dim}>{selected() ? "█" : " "}</text>
-                                    <text fg={selected() ? COLORS.bg : COLORS.text}>{selected() ? `[ ${item} ]` : `[ ${item} ]`}</text>
-                                    <text fg={COLORS.dim}>{"  "}</text>
-                                  </Show>
-                                )
-                              }}
-                            </For>
-                          </box>
-                          </Show>
-                          <box height={1} flexShrink={0} border={["top"]} borderColor={COLORS.rule} />
-                        </box>
-                        </Show>
+                        <diff
+                          ref={(el: any) => (diffRef = el)}
+                          width="100%"
+                          diff={patch()}
+                          view="unified"
+                          filetype={filetype()}
+                          showLineNumbers={true}
+                        />
                       </Show>
-                    }
-                  >
-                    {/* Tree view */}
-                    <Show
-                      when={hasProject()}
-                      fallback={
-                        <box flexGrow={1} paddingLeft={1}>
-                          <text fg={COLORS.dim}>No project open. Press Esc, then pick Pick another project.</text>
-                        </box>
-                      }
-                    >
+                    </Show>
+                  </scrollbox>
+                  <Show when={answerOpen() && answerFile() === (file()?.path ?? "")}>
+                    <box height="40%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
+                      <text fg={COLORS.dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "…" : lastQuestion()}  ·  ${activeLabel()}`}</text>
                       <scrollbox
-                        ref={(el: ScrollBoxRenderable) => (treeRef = el)}
+                        ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
                         flexGrow={1}
                         backgroundColor={COLORS.bg}
-                        paddingLeft={1}
                       >
-                        <For each={treeLines()}>
-                          {(line, index) => (
-                            <text fg={index() === treeIndex() ? COLORS.bright : line.isDir ? COLORS.dim : COLORS.text}>
-                              {`${index() === treeIndex() ? "▸ " : "  "}${line.text}`}
-                            </text>
-                          )}
-                        </For>
+                        <text wrapMode="word" fg={busy() ? COLORS.dim : (answerIsError() ? COLORS.danger : COLORS.text)}>{busy() ? status() : lastAnswer()}</text>
                       </scrollbox>
-                    </Show>
+                    </box>
                   </Show>
-                }
-              >
-                {/* Log view */}
-                <scrollbox
-                  ref={(el: ScrollBoxRenderable) => (logRef = el)}
-                  flexGrow={1}
-                  backgroundColor={COLORS.bg}
-                  paddingLeft={1}
-                >
-                  <For each={transcript()}>
-                    {(entry) => (
-                      <For each={entry.text.split("\n")}>
-                        {(line) => <text fg={ENTRY_FG[entry.kind]}>{line === "" ? " " : line}</text>}
+                  <Show when={(files()?.length ?? 0) > 0}>
+                    <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
+                      <For each={ACTION_ITEMS}>
+                        {(item, i) => {
+                          const disabled = () => i() === 0 && isFirstFile()
+                          const selected = () => action() === i() && !disabled()
+                          return (
+                            <Show when={!(i() === 0 && isFirstFile())}>
+                              <text fg={selected() ? COLORS.bg : COLORS.dim}>{selected() ? "█" : " "}</text>
+                              <text fg={selected() ? COLORS.bg : COLORS.text}>{selected() ? `[ ${item} ]` : `[ ${item} ]`}</text>
+                              <text fg={COLORS.dim}>{"  "}</text>
+                            </Show>
+                          )
+                        }}
                       </For>
-                    )}
-                  </For>
-                </scrollbox>
+                    </box>
+                    <box height={1} flexShrink={0} border={["top"]} borderColor={COLORS.rule} />
+                  </Show>
+                </box>
               </Show>
-            }
-          >
-            {/* Done view */}
-            <box flexGrow={1} flexDirection="column" paddingLeft={1}>
-              <text fg={COLORS.bright}>All done.</text>
-              <text fg={COLORS.dim}>{` You looked at ${files()?.length ?? 0} files:  asked about ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length},  skipped ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length} without asking.`}</text>
-              <Show when={(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length === 0}>
-                <text fg={COLORS.dim}>You asked about every file.</text>
-              </Show>
-              <box height={1} />
-              <select
-                ref={(el: SelectRenderable) => (menuSelectRef = el)}
-                flexGrow={1}
-                options={doneOptions()}
-                showDescription={true}
-                showScrollIndicator={true}
-                backgroundColor={COLORS.bg}
-                focusedBackgroundColor={COLORS.bg}
-                textColor={COLORS.text}
-                focusedTextColor={COLORS.bright}
-                selectedBackgroundColor={COLORS.selectedBg}
-                selectedTextColor={COLORS.bright}
-                descriptionColor={COLORS.dim}
-                selectedDescriptionColor={COLORS.dim}
-              />
-            </box>
+            </Show>
+          }>{/* Tree view */}
+            <Show when={hasProject()} fallback={
+              <box flexGrow={1} paddingLeft={1}>
+                <text fg={COLORS.dim}>No project open. Type /cd and a project name or folder, for example /cd myapp</text>
+              </box>
+            }>
+              <scrollbox ref={(el: ScrollBoxRenderable) => (treeRef = el)} flexGrow={1} backgroundColor={COLORS.bg} paddingLeft={1}>
+                <For each={treeLines()}>
+                  {(line, index) => (
+                    <text fg={index() === treeIndex() ? COLORS.bright : line.isDir ? COLORS.dim : COLORS.text}>
+                      {`${index() === treeIndex() ? "▸ " : "  "}${line.text}`}
+                    </text>
+                  )}
+                </For>
+              </scrollbox>
+            </Show>
           </Show>
-        }
-      >
-        {/* Projects view */}
+        }>{/* Log view */}
+          <scrollbox ref={(el: ScrollBoxRenderable) => (logRef = el)} flexGrow={1} backgroundColor={COLORS.bg} paddingLeft={1}>
+            <For each={transcript()}>
+              {(entry) => (
+                <For each={entry.text.split("\n")}>
+                  {(line) => <text fg={ENTRY_FG[entry.kind]}>{line === "" ? " " : line}</text>}
+                </For>
+              )}
+            </For>
+          </scrollbox>
+        </Show>
+      }>{/* Done view */}
         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
-          <text fg={COLORS.bright}>Which project do you want to review?</text>
-          <box height={1} />
-          <Show
-            when={projectPickerItems().length > 0}
-            fallback={
-              <text fg={COLORS.dim}>No projects yet. Paste a folder path below, like ~/code/myapp, and press Enter.</text>
-            }
-          >
-            <select
-              ref={(el: SelectRenderable) => {
-                projectPickerSelectRef = el
-                el.setSelectedIndex(projectPickerIndex())
-              }}
-              flexGrow={1}
-              options={projectPickerOptions()}
-              showDescription={true}
-              showScrollIndicator={true}
-              backgroundColor={COLORS.bg}
-              focusedBackgroundColor={COLORS.bg}
-              textColor={COLORS.text}
-              focusedTextColor={COLORS.bright}
-              selectedBackgroundColor={COLORS.selectedBg}
-              selectedTextColor={COLORS.bright}
-              descriptionColor={COLORS.dim}
-              selectedDescriptionColor={COLORS.dim}
-            />
+          <text fg={COLORS.bright}>All done.</text>
+          <text fg={COLORS.dim}>{` You looked at ${files()?.length ?? 0} files:  asked about ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length},  skipped ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length} without asking.`}</text>
+          <Show when={(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length === 0}>
+            <text fg={COLORS.dim}>You asked about every file.</text>
           </Show>
-          <text fg={COLORS.dim}>
-            {(() => {
-              const item = projectPickerItems()[projectPickerIndex()]
-              const sum = highlightedSummary()
-              if (item === undefined) return ""
-              if (sum === undefined) return `${item.name}`
-              return `${item.name} is on branch ${sum.branch} with ${sum.changedCount} changed files`
-            })()}
-          </text>
-          <text fg={COLORS.dim}>or paste a folder path here, then press Enter</text>
+          <box height={1} />
+          <select
+            ref={(el: SelectRenderable) => (menuSelectRef = el)}
+            flexGrow={1}
+            options={doneOptions()}
+            showDescription={true}
+            showScrollIndicator={true}
+            backgroundColor={COLORS.bg}
+            focusedBackgroundColor={COLORS.bg}
+            textColor={COLORS.text}
+            focusedTextColor={COLORS.bright}
+            selectedBackgroundColor={COLORS.selectedBg}
+            selectedTextColor={COLORS.bright}
+            descriptionColor={COLORS.dim}
+            selectedDescriptionColor={COLORS.dim}
+          />
         </box>
       </Show>
 
       {/* Menu overlay */}
+
       <Show when={menuOpen()}>
         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
           <text fg={COLORS.bright}>Menu</text>
@@ -1694,6 +1546,15 @@ export function ReviewApp() {
         </box>
       </Show>
 
+      <Show when={cdMatches() !== null}>
+        <box height={1} flexShrink={0} paddingLeft={1}>
+          <text fg={COLORS.dim}>
+            {cdMatches()!.length === 0
+              ? "no saved project matches, press Enter to try it as a folder"
+              : `matches: ${cdMatches()!.join(" · ")}`}
+          </text>
+        </box>
+      </Show>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={COLORS.bright}>{"> "}</text>
         <input

@@ -98,112 +98,6 @@ async function phase1Tests(): Promise<void> {
 }
 
 
-async function phase2Tests(): Promise<void> {
-  const projectsDir = mkdtempSync(join(tmpdir(), "chert-projects-"));
-  const cfg = join(projectsDir, ".chert-config");
-  const orig = process.cwd();
-  const prevCfg = process.env.CHERT_CONFIG_DIR;
-  process.env.CHERT_CONFIG_DIR = cfg;
-  try {
-    const mkRepo = (name: string, content: string) => {
-      const dir = join(projectsDir, name);
-      mkdirSync(dir, { recursive: true });
-      runGit(dir, ["init", "-b", "main"]);
-      runGit(dir, ["config", "user.email", "smoke@example.com"]);
-      runGit(dir, ["config", "user.name", "smoke"]);
-      writeFileSync(join(dir, "file.txt"), content);
-      runGit(dir, ["add", "."]);
-      runGit(dir, ["commit", "-m", "base"]);
-      writeFileSync(join(dir, "file.txt"), content + "changed\n");
-      return dir;
-    };
-    const alpha = mkRepo("alpha", "alpha-one\n");
-    const beta = mkRepo("beta", "beta-one\n");
-
-    process.chdir(projectsDir);
-    const { testRender: render } = await import("@opentui/solid");
-    const { ReviewApp } = await import("../src/tui/app.tsx");
-    const setup = await render(ReviewApp, { width: 100, height: 30 });
-    try {
-      await setup.renderOnce();
-      let frame = setup.captureCharFrame();
-      assert(frame.includes("no project selected"), "picker starts with no project selected in non-repo cwd");
-      assert(frame.includes("alpha") && frame.includes("beta"), "picker lists child repos");
-      assert(frame.includes("found here"), "picker shows found repos");
-
-      // alpha and beta alphabetical; open beta (second)
-      await setup.mockInput.pressArrow("down");
-      await setup.mockInput.pressKey("RETURN");
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      assert(frame.includes("chert · beta ·"), "opening found repo shows its name in header");
-      assert(frame.includes("file.txt"), "opened project loads its files");
-
-      // projects.json lists beta first
-      const { loadRecent } = await import("../src/projects.ts");
-      let recents = loadRecent();
-      assert(recents.length >= 1 && recents[0].path === beta, "projects.json lists opened project first");
-
-      // open alpha via /project <path>, order flips and no duplication
-      await setup.mockInput.pressKeys(("/project " + alpha).split(""));
-      await setup.mockInput.pressKey("RETURN");
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      assert(frame.includes("chert · alpha ·"), "opening other project switches to it");
-      recents = loadRecent();
-      assert(recents[0].path === alpha && recents[1].path === beta, "recent order flips to newest first");
-      assert(recents.filter((r) => r.path === alpha || r.path === beta).length === 2, "no duplicate recent entries");
-
-      // /project reopens picker with recents first
-      await setup.mockInput.pressKeys("/project".split(""));
-      await setup.mockInput.pressKey("RETURN");
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      const alphaIdx = frame.indexOf("alpha");
-      const betaIdx = frame.indexOf("beta");
-      assert(alphaIdx !== -1 && betaIdx !== -1 && alphaIdx < betaIdx, "picker shows recents first");
-
-      // bogus path shows error and stays in picker (typed as non-slash path)
-      await setup.mockInput.pressKeys("no-such-repo-here".split(""));
-      await setup.mockInput.pressKey("RETURN");
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      assert(frame.includes("that folder isn't a git project:"), "bogus path shows error");
-      assert(frame.includes("found here") || frame.includes("recent"), "stays in picker after bogus path");
-
-      // subfolder of alpha opens alpha root (typed as non-slash relative path)
-      mkdirSync(join(alpha, "subdir"), { recursive: true });
-      await setup.mockInput.pressKeys("subdir".split(""));
-      await setup.mockInput.pressKey("RETURN");
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      assert(frame.includes("chert · alpha ·"), "subfolder path opens repo root project");
-
-      // x forgets a recent entry
-      await setup.mockInput.pressKeys("/project".split(""));
-      await setup.mockInput.pressKey("RETURN");
-      await setup.renderOnce();
-      // recent list now alpha, beta; select alpha (recent) and forget
-      const recentsBeforeX = loadRecent();
-      await setup.mockInput.pressKeys(["\u001B[3~"]);
-      await new Promise((r) => setTimeout(r, 60));
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      const recentsAfterX = loadRecent();
-      assert(recentsAfterX.length === recentsBeforeX.length - 1, "Delete removes one recent entry");
-      assert(frame.includes("removed from the list"), "Delete shows removed status");
-    } finally {
-      await setup.dispose().catch(() => {});
-    }
-  } finally {
-    process.chdir(orig);
-    if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR;
-    else process.env.CHERT_CONFIG_DIR = prevCfg;
-    rmSync(projectsDir, { recursive: true, force: true });
-  }
-}
-
-
 async function phase3Tests(): Promise<void> {
   const repo = mkdtempSync(join(tmpdir(), "chert-phase3-"));
   const cfg = mkdtempSync(join(tmpdir(), "chert-phase3-cfg-"));
@@ -463,6 +357,94 @@ async function phase4Tests(): Promise<void> {
   }
 }
 
+
+async function phaseBTests(): Promise<void> {
+  const projectsDir = mkdtempSync(join(tmpdir(), "chert-phaseb-"));
+  const cfg = mkdtempSync(join(tmpdir(), "chert-phaseb-cfg-"));
+  const orig = process.cwd();
+  const prevCfg = process.env.CHERT_CONFIG_DIR;
+  process.env.CHERT_CONFIG_DIR = cfg;
+  try {
+    const mkRepo = (name: string) => {
+      const dir = join(projectsDir, name);
+      mkdirSync(dir, { recursive: true });
+      runGit(dir, ["init", "-b", "main"]);
+      runGit(dir, ["config", "user.email", "smoke@example.com"]);
+      runGit(dir, ["config", "user.name", "smoke"]);
+      writeFileSync(join(dir, "file.txt"), "x\n");
+      runGit(dir, ["add", "."]);
+      runGit(dir, ["commit", "-m", "base"]);
+      writeFileSync(join(dir, "file.txt"), "x\nchanged\n");
+      return dir;
+    };
+    const alpha = mkRepo("alpha");
+    const beta = mkRepo("beta");
+
+    // empty start state: no project
+    process.chdir(projectsDir);
+    const { testRender: render } = await import("@opentui/solid");
+    const { ReviewApp } = await import("../src/tui/app.tsx");
+    const setup = await render(ReviewApp, { width: 100, height: 30 });
+    try {
+      await setup.renderOnce();
+      let frame = setup.captureCharFrame();
+      assert(frame.includes("No project open"), "phaseB empty start state");
+      assert(frame.includes("no project selected"), "phaseB header no project");
+
+      // /cd alpha opens it
+      await setup.mockInput.pressKeys("/cd alpha".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("opened alpha"), "phaseB /cd alpha opens");
+      assert(frame.includes("chert · alpha ·"), "phaseB header shows alpha");
+
+      // /projects lists saved (alpha)
+      await setup.mockInput.pressKeys("/projects".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("alpha"), "phaseB /projects lists alpha");
+
+      // /cd beta opens beta, /cd - returns to alpha
+      await setup.mockInput.pressKeys(("/cd " + beta).split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("opened beta"), "phaseB /cd beta opens");
+      await setup.mockInput.pressKeys("/cd -".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("opened alpha"), "phaseB /cd - returns to previous");
+
+      // bogus name
+      await setup.mockInput.pressKeys("/cd nope-nope".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("No project or folder called"), "phaseB bogus name error");
+
+      // /forget
+      await setup.mockInput.pressKeys("/forget alpha".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("removed from your list"), "phaseB /forget works");
+
+    } finally {
+      await setup.dispose().catch(() => {});
+
+    }
+  } finally {
+    process.chdir(orig);
+    if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR;
+    else process.env.CHERT_CONFIG_DIR = prevCfg;
+    rmSync(projectsDir, { recursive: true, force: true });
+    rmSync(cfg, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   const originalCwd = process.cwd();
   const tmp = mkdtempSync(join(tmpdir(), "chert-smoke-"));
@@ -473,9 +455,9 @@ async function main(): Promise<void> {
   let ok = false;
 
   try {
+    await phaseBTests();
     await phase4Tests();
     await phase1Tests();
-    await phase2Tests();
     await phase3Tests();
     // Seed a repo that exercises every change kind.
     runGit(tmp, ["init", "-b", "main"]);
@@ -545,11 +527,7 @@ async function main(): Promise<void> {
     frame = setup.captureCharFrame();
     assert(frame.includes("refreshed 3 files"), "/refresh reports the file count");
 
-    // Tab returns to the review view; refresh reset selection to the first file.
-    await setup.mockInput.pressKey("TAB");
-    await setup.renderOnce();
-    frame = setup.captureCharFrame();
-    assert(frame.includes("oldThing") && frame.includes("Ctrl+C quit"), "Tab returns to the review view");
+    // (Tab no longer cycles views in Phase B; use /tree for the tree.)
 
     // /connect lists every connector with key state.
     await setup.mockInput.pressKeys("/connect".split(""));
@@ -580,14 +558,9 @@ async function main(): Promise<void> {
     frame = setup.captureCharFrame();
     assert(frame.includes("[ opencode ]"), "/use opencode switches back");
 
-    // Tab cycles back to the review view first…
-    await setup.mockInput.pressKey("TAB");
-    await setup.renderOnce();
-    frame = setup.captureCharFrame();
-    assert(frame.includes("oldThing") && frame.includes("Ctrl+C quit"), "Tab cycles back to the review view");
-
-    // …then into the project tree view.
-    await setup.mockInput.pressKey("TAB");
+    // Tree view via /tree command.
+    await setup.mockInput.pressKeys("/tree".split(""));
+    await setup.mockInput.pressKey("RETURN");
     await setup.renderOnce();
     frame = setup.captureCharFrame();
     assert(
