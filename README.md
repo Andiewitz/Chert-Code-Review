@@ -53,9 +53,11 @@ Done screen and menus: `Up`/`Down` choose, `Enter` go, `Esc` close.
 
 Other:
 - `Enter` in the tree — open the selected file's diff in the review view
-- `Enter` in the project picker — open the selected project
-- `Delete` in the project picker — remove a recent project from the list
-- `Esc` in the project picker — go back to the previous view (if a project is open)
+- `/cd <name or path>` — switch to a saved or new project
+- `/cd` — list saved projects
+- `/cd -` — return to the previous project
+- `/projects` — list saved projects
+- `/forget <name or path>` — remove a saved project (files untouched)
 - `Ctrl+C` — quit (`/quit` also works)
 
 ## The prompt
@@ -70,8 +72,9 @@ in the current project directory (opencode must be installed; no API keys needed
 /open <query>      jump to a file
 /run <command>     run a shell command in the current project
 /cd <dir>          switch project directory (opens repo root)
-/project           open the project picker
-/project <path>    switch to a project (like /cd)
+/cd <name or path> switch to a saved or new project
+/projects          list saved projects
+/forget <name>     remove a saved project
 /cwd               show the current project
 /tree              whole project tree (folders, nested files, M/D/?? marks)
 ```
