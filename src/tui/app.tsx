@@ -90,6 +90,12 @@ const COMMAND_DEFS: CommandDef[] = [
 function buildHelpText(): string {
   const pad = Math.max(...COMMAND_DEFS.map((c) => c.usage.length)) + 2
   return [
+    "keys:",
+    "  Left/Right choose an action · Enter does it",
+    "  Up/Down scroll the diff · PgUp/PgDn scroll the answer (when open)",
+    "  Esc menu · Ctrl+C quit",
+    "  type a question and press Enter to ask",
+    "",
     "commands:",
     ...COMMAND_DEFS.map((c) => `  ${c.usage.padEnd(pad)}${c.description}`),
     "connectors: opencode (default) · openrouter · gemini · groq · nim",
@@ -1419,10 +1425,12 @@ export function ReviewApp() {
                         {/* Review view */}
                         <box flexGrow={1} flexDirection="column">
                           {/* Step header */}
-                          <box height={1} flexShrink={0} paddingLeft={1}>
-                            <text fg={COLORS.bright}>{stepHeader()}</text>
-                          </box>
-                          <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+                          <Show when={(files()?.length ?? 0) > 0}>
+                            <box height={1} flexShrink={0} paddingLeft={1}>
+                              <text fg={COLORS.bright}>{stepHeader()}</text>
+                            </box>
+                            <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+                          </Show>
                           {/* Diff */}
                           <scrollbox
                             ref={(el: ScrollBoxRenderable) => {
@@ -1479,6 +1487,7 @@ export function ReviewApp() {
                             </box>
                           </Show>
                           {/* Action bar */}
+                          <Show when={(files()?.length ?? 0) > 0}>
                           <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
                             <For each={ACTION_ITEMS}>
                               {(item, i) => {
@@ -1494,6 +1503,7 @@ export function ReviewApp() {
                               }}
                             </For>
                           </box>
+                          </Show>
                           <box height={1} flexShrink={0} border={["top"]} borderColor={COLORS.rule} />
                         </box>
                         </Show>
