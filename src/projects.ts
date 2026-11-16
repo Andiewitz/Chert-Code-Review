@@ -193,58 +193,67 @@ export function findReposBelow(dir: string): string[] {
   }
 }
 
-export interface ProjectSummary {
-  branch: string
-  changedCount: number
+export type ResolveResult =
+  | { kind: "open"; root: string; name: string }
+  | { kind: "ambiguous"; matches: RecentProject[] }
+  | { kind: "contains"; repoNames: string[] }
+  | { kind: "none"; query: string }
+
+/** Parse a /cd argument: strip matching quotes, handle backslash-space escapes
+ * (non-Windows), expand "~", strip trailing slashes. */
+export function parseCdArgument(raw: string): string {
+  let p = raw.trim()
+  if (p.length >= 2 && ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'")))) {
+    p = p.slice(1, -1)
+  } else if (process.platform !== "win32") {
+    p = p.replace(/\\ /g, " ")
+  }
+  p = expandPath(p)
+  p = p.replace(/[\\/]+$/, "")
+  return p
 }
 
-/** Lightweight summary of a project for the picker's details line.
- * Returns undefined on any failure (missing dir, not a repo, git error). */
-export function projectSummary(path: string): ProjectSummary | undefined {
-  try {
-    const root = resolveProjectRoot(path)
-    if (root === undefined) return undefined
-    // branch
-    let branch = "no commits"
-    try {
-      const proc = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
-        cwd: root,
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-      if (proc.exitCode === 0) {
-        const out = proc.stdout.toString().trim()
-        if (out !== "") branch = out
-      }
-    } catch {
-      // keep default
+/** Resolve a /cd query to an action. */
+export function resolveProject(query: string): ResolveResult {
+  const q = query.trim()
+  const expanded = expandPath(q)
+  if (isDirectory(expanded)) {
+    const root = enterProject(expanded)
+    if (root !== undefined) {
+      return { kind: "open", root, name: basename(root) || root }
     }
-    // changed count: use listChangedFiles? that's in git.ts. Count via git diff --name-only HEAD + untracked.
-    let changedCount = 0
-    try {
-      const tracked = Bun.spawnSync(["git", "diff", "--name-only", "HEAD"], {
-        cwd: root,
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-      if (tracked.exitCode === 0) {
-        changedCount += tracked.stdout.toString().split("\n").filter((l) => l.trim() !== "").length
-      }
-      const untracked = Bun.spawnSync(["git", "ls-files", "--others", "--exclude-standard"], {
-        cwd: root,
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-      if (untracked.exitCode === 0) {
-        changedCount += untracked.stdout.toString().split("\n").filter((l) => l.trim() !== "").length
-      }
-    } catch {
-      // keep count
+    const repos = findReposBelow(expanded)
+    if (repos.length > 0) {
+      return { kind: "contains", repoNames: repos.map((r) => basename(r)) }
     }
-    return { branch, changedCount }
-  } catch {
-    return undefined
+    return { kind: "none", query: q }
   }
+  const recents = loadRecent()
+  const lower = q.toLowerCase()
+  const tryTier = (pred: (r: RecentProject) => boolean): RecentProject[] =>
+    recents.filter(pred)
+  // exact
+  let matches = tryTier((r) => basename(r.path).toLowerCase() === lower)
+  if (matches.length === 1) {
+    const root = enterProject(expandPath(matches[0].path))
+    if (root !== undefined) return { kind: "open", root, name: basename(root) || root }
+  }
+  if (matches.length > 1) return { kind: "ambiguous", matches }
+  // prefix
+  matches = tryTier((r) => basename(r.path).toLowerCase().startsWith(lower))
+  if (matches.length === 1) {
+    const root = enterProject(expandPath(matches[0].path))
+    if (root !== undefined) return { kind: "open", root, name: basename(root) || root }
+  }
+  if (matches.length > 1) return { kind: "ambiguous", matches }
+  // substring
+  matches = tryTier((r) => basename(r.path).toLowerCase().includes(lower))
+  if (matches.length === 1) {
+    const root = enterProject(expandPath(matches[0].path))
+    if (root !== undefined) return { kind: "open", root, name: basename(root) || root }
+  }
+  if (matches.length > 1) return { kind: "ambiguous", matches }
+  return { kind: "none", query: q }
 }
 
 /** Resolve `dir` to a repo root and chdir into it. Returns the root on
