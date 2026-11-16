@@ -82,7 +82,7 @@ switch (command) {
         // fall through to error
       }
     }
-    console.error(`no such directory or command: ${command}`);
+    console.error(`no such folder or command: ${command}`);
     printHelp();
     process.exit(1);
   }
