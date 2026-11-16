@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Show, onCleanup } from "solid-js"
 import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption, SelectRenderable } from "@opentui/core"
@@ -185,6 +185,11 @@ export function ReviewApp() {
   const [treeIndex, setTreeIndex] = createSignal(0)
   const [view, setView] = createSignal<MainView>(initialRoot ? "review" : "projects")
   const [mode, setMode] = createSignal<"prompt" | "browse">("prompt")
+  const [answerOpen, setAnswerOpen] = createSignal(false)
+  const [busy, setBusy] = createSignal(false)
+  const [scrollTarget, setScrollTarget] = createSignal<"diff" | "answer">("diff")
+  const [lastQuestion, setLastQuestion] = createSignal("")
+  const [lastAnswer, setLastAnswer] = createSignal("")
   const [previousView, setPreviousView] = createSignal<"review" | "tree" | "log">("review")
   const [hasProject, setHasProject] = createSignal(initialRoot !== undefined)
   const [branch, setBranch] = createSignal("no commits")
@@ -225,6 +230,7 @@ export function ReviewApp() {
   let selectRef: SelectRenderable | undefined
   let projectPickerSelectRef: SelectRenderable | undefined
   let diffScrollRef: ScrollBoxRenderable | undefined
+  let answerScrollRef: ScrollBoxRenderable | undefined
   let diffRef: any
   let inputRef: InputRenderable | undefined
   let logRef: ScrollBoxRenderable | undefined
@@ -520,54 +526,91 @@ export function ReviewApp() {
     clearInput()
     if (raw.startsWith("/")) {
       runCommand(raw.slice(1).trim())
-    } else if (view() === "projects") {
-      openProjectAt(raw)
-    } else {
-      void askAgent(raw)
+      return
     }
+    if (view() === "projects") {
+      openProjectAt(raw)
+      return
+    }
+    if (busy()) {
+      setStatus("still waiting on the last answer")
+      return
+    }
+    void askAgent(raw)
   }
 
   async function askAgent(prompt: string): Promise<void> {
     addEntry("user", prompt)
-    setView("log")
-    const active = connector()
-    if (active === "opencode") {
-      if (!opencodeAvailable()) {
-        addEntry("error", "opencode CLI not found — install it (https://opencode.ai) or /connect a provider (openrouter, gemini, groq, nim)")
-        setStatus("")
+    setLastQuestion(prompt)
+    setBusy(true)
+    setLastAnswer("")
+    const startedAt = Date.now()
+    let statusPrefix = "thinking… "
+    setStatus("thinking… 0s")
+    let interval: ReturnType<typeof setInterval> | undefined
+    interval = setInterval(() => {
+      setStatus(`${statusPrefix}${Math.floor((Date.now() - startedAt) / 1000)}s`)
+    }, 1000)
+    const clearTimer = () => {
+      if (interval !== undefined) {
+        clearInterval(interval)
+        interval = undefined
+      }
+    }
+    // Request cancelling is not implemented yet (comes later).
+    try {
+      const active = connector()
+      if (active === "opencode") {
+        if (!opencodeAvailable()) {
+          const msg = "opencode CLI not found — install it (https://opencode.ai) or /connect a provider (openrouter, gemini, groq, nim)"
+          addEntry("error", msg)
+          setLastAnswer(msg)
+          return
+        }
+        statusPrefix = "thinking… "
+        setStatus("thinking… 0s")
+        const result = await runAgent(prompt, cwd())
+        addEntry("agent", result)
+        setLastAnswer(result)
         return
       }
-      setStatus("agent: thinking…")
-      try {
-        addEntry("agent", await runAgent(prompt, cwd()))
-        setStatus("")
-      } catch (error) {
-        addEntry("error", error instanceof Error ? error.message : String(error))
-        setStatus("agent: failed")
+      const provider = findProvider(active)
+      if (!provider) {
+        const msg = `unknown connector "${active}"`
+        addEntry("error", msg)
+        setLastAnswer(msg)
+        return
       }
-      return
-    }
-    const provider = findProvider(active)
-    if (!provider) {
-      addEntry("error", `unknown connector "${active}"`)
-      setStatus("")
-      return
-    }
-    const key = resolveKey(provider.id)
-    if (key === undefined) {
-      addEntry("error", `no API key for ${provider.label} — /connect ${provider.id} <key> or set ${provider.envKeys[0]}`)
-      setStatus("")
-      return
-    }
-    const useModel = model() ?? provider.defaultModel
-    setStatus(`${provider.id} ${useModel}: thinking…`)
-    const system = `You are chert's code-review assistant. Current project directory: ${cwd()}. Locally changed files: ${(files() ?? []).map((f) => f.path).join(", ") || "none"}.`
-    try {
-      addEntry("agent", await chatCompletion(provider, key, useModel, system, prompt))
-      setStatus("")
+      const key = resolveKey(provider.id)
+      if (key === undefined) {
+        const msg = `no API key for ${provider.label} — /connect ${provider.id} <key> or set ${provider.envKeys[0]}`
+        addEntry("error", msg)
+        setLastAnswer(msg)
+        return
+      }
+      const useModel = model() ?? provider.defaultModel
+      statusPrefix = `${provider.id} ${useModel}: thinking… `
+      setStatus(`${statusPrefix}0s`)
+      const system = `You are chert's code-review assistant. Current project directory: ${cwd()}. Locally changed files: ${(files() ?? []).map((f) => f.path).join(", ") || "none"}.`
+      const result = await chatCompletion(provider, key, useModel, system, prompt)
+      addEntry("agent", result)
+      setLastAnswer(result)
     } catch (error) {
-      addEntry("error", error instanceof Error ? error.message : String(error))
-      setStatus("agent: failed")
+      const msg = error instanceof Error ? error.message : String(error)
+      addEntry("error", msg)
+      setLastAnswer(msg)
+    } finally {
+      clearTimer()
+      setBusy(false)
+      const v = view()
+      if (v === "review") {
+        setAnswerOpen(true)
+        setStatus("")
+      } else if (v === "tree" || v === "projects") {
+        setStatus("answer ready, press a in review")
+      } else {
+        setStatus("")
+      }
     }
   }
 
@@ -850,21 +893,33 @@ export function ReviewApp() {
         return
       }
 
-      // Scroll the diff pane.
+      // Scroll whichever pane is the current scroll target.
       if (key.name === "space" || key.name === " " || key.sequence === " " || key.raw === " " || key.name === "pagedown" || (key.ctrl && key.name === "d")) {
-        try { diffScrollRef?.scrollBy({ x: 0, y: 15 }) } catch (e) { console.error("scroll err", e) }
+        try {
+          if (scrollTarget() === "answer") answerScrollRef?.scrollBy({ x: 0, y: 15 })
+          else diffScrollRef?.scrollBy({ x: 0, y: 15 })
+        } catch { /* ignore */ }
         return
       }
       if (key.name === "b" || key.name === "pageup" || (key.ctrl && key.name === "u")) {
-        try { diffScrollRef?.scrollBy({ x: 0, y: -15 }) } catch { /* ignore */ }
+        try {
+          if (scrollTarget() === "answer") answerScrollRef?.scrollBy({ x: 0, y: -15 })
+          else diffScrollRef?.scrollBy({ x: 0, y: -15 })
+        } catch { /* ignore */ }
         return
       }
       if (key.name === "g" && !key.shift) {
-        try { diffScrollRef?.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ }
+        try {
+          if (scrollTarget() === "answer") answerScrollRef?.scrollTo({ x: 0, y: 0 })
+          else diffScrollRef?.scrollTo({ x: 0, y: 0 })
+        } catch { /* ignore */ }
         return
       }
       if (key.name === "G" || (key.name === "g" && key.shift)) {
-        try { diffScrollRef?.scrollTo({ x: 0, y: Infinity }) } catch { /* ignore */ }
+        try {
+          if (scrollTarget() === "answer") answerScrollRef?.scrollTo({ x: 0, y: Infinity })
+          else diffScrollRef?.scrollTo({ x: 0, y: Infinity })
+        } catch { /* ignore */ }
         return
       }
 
@@ -889,6 +944,15 @@ export function ReviewApp() {
         } catch {
           // ignore
         }
+        return
+      }
+
+      if (key.name === "a" && !key.shift) {
+        setAnswerOpen((o) => !o)
+        return
+      }
+      if (key.name === "A" || (key.name === "a" && key.shift)) {
+        setScrollTarget((t) => (t === "diff" ? "answer" : "diff"))
         return
       }
 
@@ -1096,7 +1160,7 @@ export function ReviewApp() {
                         selectedDescriptionColor={COLORS.dim}
                       />
 
-                      <box flexGrow={1} height="100%" paddingLeft={1}>
+                      <box flexGrow={1} height="100%" paddingLeft={1} flexDirection="column">
                         <Show when={!loadError()} fallback={<text fg={COLORS.danger}>{` ${loadError()}`}</text>}>
                           <Show
                             when={file()}
@@ -1117,6 +1181,18 @@ export function ReviewApp() {
                               />
                             </scrollbox>
                           </Show>
+                        </Show>
+                        <Show when={answerOpen()}>
+                          <box height="35%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
+                            <text fg={COLORS.dim}>{`you: ${lastQuestion().length > 40 ? lastQuestion().slice(0, 40) + "…" : lastQuestion()} · ${activeLabel()} · [scrolling: ${scrollTarget()}]`}</text>
+                            <scrollbox
+                              ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
+                              flexGrow={1}
+                              backgroundColor={COLORS.bg}
+                            >
+                              <text wrapMode="word" fg={COLORS.text}>{lastAnswer()}</text>
+                            </scrollbox>
+                          </box>
                         </Show>
                       </box>
                     </box>

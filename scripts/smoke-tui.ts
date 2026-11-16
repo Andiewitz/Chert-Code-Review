@@ -314,6 +314,93 @@ async function phase3Tests(): Promise<void> {
   }
 }
 
+
+async function phase4Tests(): Promise<void> {
+  if (process.platform === "win32") {
+    console.log("phase4Tests skipped on win32");
+    return;
+  }
+  const repo = mkdtempSync(join(tmpdir(), "chert-phase4-"));
+  const cfg = mkdtempSync(join(tmpdir(), "chert-phase4-cfg-"));
+  const binDir = mkdtempSync(join(tmpdir(), "chert-phase4-bin-"));
+  const orig = process.cwd();
+  const prevCfg = process.env.CHERT_CONFIG_DIR;
+  const prevPath = process.env.PATH;
+  try {
+    // fake opencode executable
+    const script = join(binDir, "opencode");
+    writeFileSync(script, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"run\" ]; then\n  sleep 1\n  echo \"answer line 1\"\n  echo \"answer line 2\"\n  echo \"answer line 3\"\n  exit 0\nfi\nexit 0\n");
+    const { chmodSync } = await import("node:fs");
+    chmodSync(script, 0o755);
+
+    // prepend to PATH BEFORE importing the app (opencodeAvailable caches)
+    process.env.PATH = binDir + ":" + (process.env.PATH ?? "");
+    process.env.CHERT_CONFIG_DIR = cfg;
+
+    runGit(repo, ["init", "-b", "main"]);
+    runGit(repo, ["config", "user.email", "smoke@example.com"]);
+    runGit(repo, ["config", "user.name", "smoke"]);
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src", "modified.ts"), "export const before = 1\n");
+    runGit(repo, ["add", "."]);
+    runGit(repo, ["commit", "-m", "base"]);
+    writeFileSync(join(repo, "src", "modified.ts"), "export const before = 1\nexport const addedByTest = 2\n");
+
+    process.chdir(repo);
+    await getTreeSitterClient().initialize().catch(() => {});
+    const { testRender: render } = await import("@opentui/solid");
+    const { ReviewApp } = await import("../src/tui/app.tsx");
+    const setup = await render(ReviewApp, { width: 100, height: 30 });
+    try {
+      await setup.renderOnce();
+      let frame = setup.captureCharFrame();
+      assert(frame.includes("addedByTest"), "phase4 diff text on screen initially");
+
+      // ask a question from review view
+      await setup.mockInput.pressKeys("what changed?".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      // busy: submit another prompt -> rejected
+      await setup.mockInput.pressKeys("second question".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("still waiting on the last answer"), "phase4 second prompt rejected while busy");
+
+      // wait for answer
+      await new Promise((r) => setTimeout(r, 1500));
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("addedByTest"), "phase4 diff text stays on screen after answer");
+      assert(frame.includes("answer line 1"), "phase4 answer text appears in pane");
+
+      // a toggles pane
+      await setup.mockInput.pressEscape();
+      await new Promise((r) => setTimeout(r, 60));
+      await setup.renderOnce();
+      await setup.mockInput.pressKey("a");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(!frame.includes("answer line 1"), "phase4 a hides pane");
+      await setup.mockInput.pressKey("a");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("answer line 1"), "phase4 a shows pane");
+    } finally {
+      await setup.dispose().catch(() => {});
+    }
+  } finally {
+    process.chdir(orig);
+    if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR;
+    else process.env.CHERT_CONFIG_DIR = prevCfg;
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(cfg, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   const originalCwd = process.cwd();
   const tmp = mkdtempSync(join(tmpdir(), "chert-smoke-"));
@@ -324,6 +411,7 @@ async function main(): Promise<void> {
   let ok = false;
 
   try {
+    await phase4Tests();
     await phase1Tests();
     await phase2Tests();
     await phase3Tests();
