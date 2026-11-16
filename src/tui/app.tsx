@@ -3,7 +3,8 @@ import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption, SelectRenderable } from "@opentui/core"
 import { basename, dirname, resolve } from "node:path"
-import { currentBranch, listChangedFiles, loadPatch } from "../git"
+import { commitParent, commitSubject, currentBranch, listChangedFiles, loadPatch, mergeBase, resolveReviewBase, resolveSha, validateRef } from "../git"
+import type { ReviewSource } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
 import type { TreeLine } from "../tree"
@@ -82,6 +83,7 @@ const COMMAND_DEFS: CommandDef[] = [
   { name: "forget", usage: "/forget <name or path>", description: "remove a saved project", takesArg: true },
   { name: "cwd", usage: "/cwd", description: "show the current project" },
   { name: "tree", usage: "/tree", description: "show the whole project tree" },
+  { name: "review", usage: "/review [working|staged|branch [base]|last|commit <ref>]", description: "what to review", takesArg: true },
   { name: "connect", usage: "/connect [provider [key]]", description: "connector status / save a provider key", takesArg: true },
   { name: "disconnect", usage: "/disconnect <provider>", description: "remove a saved provider key", takesArg: true },
   { name: "use", usage: "/use <connector> [model]", description: "route plain-text prompts (opencode or a provider)", takesArg: true },
@@ -198,6 +200,7 @@ export function ReviewApp() {
   const [view, setView] = createSignal<MainView>("review")
   const [previousView, setPreviousView] = createSignal<"review" | "tree" | "log">("review")
   const [hasProject, setHasProject] = createSignal(initialRoot !== undefined)
+  const [reviewSource, setReviewSource] = createSignal<ReviewSource>({ kind: "working" })
   const [branch, setBranch] = createSignal("no commits")
   const [transcript, setTranscript] = createSignal<Array<{ kind: EntryKind; text: string }>>([])
   const [status, setStatus] = createSignal("")
@@ -233,6 +236,22 @@ export function ReviewApp() {
     if (active === "opencode") return "opencode"
     const provider = findProvider(active)
     return provider ? `${provider.id}/${model() ?? provider.defaultModel}` : active
+  })
+
+  const sourceLabel = createMemo(() => {
+    const src = reviewSource()
+    switch (src.kind) {
+      case "working":
+        return "reviewing: uncommitted changes"
+      case "staged":
+        return "reviewing: staged changes"
+      case "branch":
+        return `reviewing: everything on ${currentBranch()} since ${src.base}`
+      case "commit": {
+        const subj = src.subject.length > 40 ? src.subject.slice(0, 40) + "…" : src.subject
+        return `reviewing: commit ${src.sha.slice(0, 7)}: ${subj}`
+      }
+    }
   })
 
   const patchCache = new Map<string, string>()
@@ -350,8 +369,9 @@ export function ReviewApp() {
     setAnswerOpen(false)
     setAnswerFile("")
     setAnswerIsError(false)
+    setReviewSource({ kind: "working" })
     try {
-      setFiles(listChangedFiles())
+      setFiles(listChangedFiles(reviewSource()))
       try {
         setBranch(currentBranch())
       } catch {
@@ -398,7 +418,7 @@ export function ReviewApp() {
       return
     }
     try {
-      const result = loadPatch(current)
+      const result = loadPatch(current, reviewSource())
       patchCache.set(current.path, result)
       setPatch(result)
       patchFor = current.path
@@ -872,6 +892,110 @@ export function ReviewApp() {
         setView("log")
         return
       }
+      case "review": {
+        const tokens = rest.split(/\s+/).filter(Boolean)
+        const sub = (tokens[0] ?? "").toLowerCase()
+        if (sub === "") {
+          const src = reviewSource()
+          let label = ""
+          switch (src.kind) {
+            case "working": label = "uncommitted changes"; break
+            case "staged": label = "staged changes"; break
+            case "branch": label = `everything on this branch since ${src.base}`; break
+            case "commit": label = `commit ${src.sha.slice(0, 7)}: ${src.subject}`; break
+          }
+          addEntry("system", `reviewing: ${label}\n/review working · /review staged · /review branch [name] · /review last · /review commit <ref>`)
+          setView("log")
+          return
+        }
+        if (sub === "working") {
+          setReviewSource({ kind: "working" })
+          load()
+          setStatus("reviewing: uncommitted changes")
+          return
+        }
+        if (sub === "staged") {
+          setReviewSource({ kind: "staged" })
+          load()
+          setStatus("reviewing: staged changes")
+          return
+        }
+        if (sub === "last") {
+          const sha = resolveSha("HEAD")
+          if (sha === null) {
+            addEntry("error", "No commits yet.")
+            setView("log")
+            return
+          }
+          const parent = commitParent(sha)
+          const subject = commitSubject(sha)
+          setReviewSource({ kind: "commit", sha, parent, subject })
+          load()
+          setStatus(`reviewing: commit ${sha.slice(0, 7)}`)
+          return
+        }
+        if (sub === "commit") {
+          const ref = tokens[1] ?? ""
+          if (ref === "" || !validateRef(ref)) {
+            addEntry("error", `Not a valid commit: "${ref}".`)
+            setView("log")
+            return
+          }
+          const sha = resolveSha(ref)
+          if (sha === null) {
+            addEntry("error", `Could not resolve "${ref}".`)
+            setView("log")
+            return
+          }
+          const parent = commitParent(sha)
+          const subject = commitSubject(sha)
+          setReviewSource({ kind: "commit", sha, parent, subject })
+          load()
+          setStatus(`reviewing: commit ${sha.slice(0, 7)}`)
+          return
+        }
+        if (sub === "branch") {
+          const baseArg = tokens.slice(1).join(" ").trim()
+          let base: string | null = null
+          if (baseArg !== "") {
+            if (!validateRef(baseArg)) {
+              addEntry("error", `Not a valid branch: "${baseArg}".`)
+              setView("log")
+              return
+            }
+            base = baseArg
+          } else {
+            base = resolveReviewBase()
+          }
+          if (base === null) {
+            addEntry("error", "I couldn't find the main branch. Type /review branch <name>.")
+            setView("log")
+            return
+          }
+          const current = currentBranch()
+          if (current === base) {
+            addEntry("system", `You're already on ${base}; staying on uncommitted changes.`)
+            setView("log")
+            return
+          }
+          // merge base
+          let mb: string
+          try {
+            mb = mergeBase(current, base)
+          } catch {
+            addEntry("error", `Could not find where ${current} split from ${base}.`)
+            setView("log")
+            return
+          }
+          setReviewSource({ kind: "branch", base, mergeBase: mb })
+          load()
+          setStatus(`reviewing: everything on ${current} since ${base}`)
+          return
+        }
+        addEntry("error", `Unknown review source "${sub}". Try /review with no arguments.`)
+        setView("log")
+        return
+      }
       case "cwd":
         addEntry("system", `project: ${cwd()}`)
         setView("log")
@@ -1300,7 +1424,7 @@ export function ReviewApp() {
     if (!hasProject()) return "no project selected"
     const project = cwdBase()
     const count = files() === null ? "loading…" : loadError() ? "error" : `${files()!.length} files`
-    return `${project} · ${branch()} · ${count}`
+    return `${project} · ${branch()} · ${sourceLabel()}`
   })
 
   const filetype = createMemo(() => {
@@ -1362,7 +1486,11 @@ export function ReviewApp() {
                         fallback={
                           <box flexDirection="column">
                             <Show when={files() !== null && (files()?.length ?? 0) === 0}>
-                              <text fg={COLORS.bright}>{`Nothing to review: there are no changes in ${cwdBase()}.`}</text>
+                              <Show when={reviewSource().kind === "working" && currentBranch() !== "no commits"} fallback={
+                                <text fg={COLORS.bright}>{`Nothing to review: there are no changes in ${cwdBase()}.`}</text>
+                              }>
+                                <text fg={COLORS.bright}>No uncommitted changes. To see the commits on this branch type /review branch</text>
+                              </Show>
                               <box height={1} />
                               <text fg={COLORS.dim}>Refresh (check for new changes)</text>
                               <text fg={COLORS.dim}>Pick another project</text>

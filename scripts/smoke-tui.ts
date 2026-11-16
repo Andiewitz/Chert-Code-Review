@@ -445,6 +445,79 @@ async function phaseBTests(): Promise<void> {
   }
 }
 
+
+async function phaseCTests(): Promise<void> {
+  // allowlist test
+  const { run } = await import("../src/git.ts");
+  let threw = false;
+  try { run(["commit", "-m", "x"]); } catch { threw = true; }
+  assert(threw, "phaseC run(['commit']) throws");
+
+  const repo = mkdtempSync(join(tmpdir(), "chert-phasec-"));
+  const cfg = mkdtempSync(join(tmpdir(), "chert-phasec-cfg-"));
+  const orig = process.cwd();
+  const prevCfg = process.env.CHERT_CONFIG_DIR;
+  process.env.CHERT_CONFIG_DIR = cfg;
+  try {
+    runGit(repo, ["init", "-b", "main"]);
+    runGit(repo, ["config", "user.email", "smoke@example.com"]);
+    runGit(repo, ["config", "user.name", "smoke"]);
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    runGit(repo, ["add", "."]);
+    runGit(repo, ["commit", "-m", "root commit"]);
+    writeFileSync(join(repo, "a.txt"), "one\ntwo\n");
+    // staged
+    runGit(repo, ["add", "a.txt"]);
+
+    process.chdir(repo);
+    await getTreeSitterClient().initialize().catch(() => {});
+    const { testRender: render } = await import("@opentui/solid");
+    const { ReviewApp } = await import("../src/tui/app.tsx");
+    const setup = await render(ReviewApp, { width: 100, height: 30 });
+    try {
+      await setup.renderOnce();
+      let frame = setup.captureCharFrame();
+      assert(frame.includes("reviewing: uncommitted changes"), "phaseC default working source");
+
+      // /review staged
+      await setup.mockInput.pressKeys("/review staged".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("reviewing: staged changes"), "phaseC /review staged");
+
+      // /review last
+      await setup.mockInput.pressKeys("/review last".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("reviewing: commit"), "phaseC /review last");
+
+      // /review working restores
+      await setup.mockInput.pressKeys("/review working".split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("reviewing: uncommitted changes"), "phaseC /review working");
+
+      // ref starting with - rejected
+      await setup.mockInput.pressKeys('/review commit -foo'.split(""));
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("Not a valid commit"), "phaseC bad ref rejected");
+    } finally {
+      await setup.dispose().catch(() => {});
+    }
+  } finally {
+    process.chdir(orig);
+    if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR;
+    else process.env.CHERT_CONFIG_DIR = prevCfg;
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(cfg, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   const originalCwd = process.cwd();
   const tmp = mkdtempSync(join(tmpdir(), "chert-smoke-"));
@@ -456,6 +529,7 @@ async function main(): Promise<void> {
 
   try {
     await phaseBTests();
+    await phaseCTests();
     await phase4Tests();
     await phase1Tests();
     await phase3Tests();
