@@ -345,7 +345,7 @@ export function ReviewApp() {
       const expanded = expandPath(target, cwd())
       const root = enterProject(expanded)
       if (root === undefined) {
-        const msg = `not inside a git repository: ${expanded}`
+        const msg = `that folder isn't a git project: ${expanded}`
         if (view() === "projects") {
           setStatus(msg)
         } else {
@@ -717,7 +717,7 @@ export function ReviewApp() {
           const target = expandPath(rest, cwd())
           const root = enterProject(target)
           if (root === undefined) {
-            addEntry("error", `not inside a git repository: ${target}`)
+            addEntry("error", `that folder isn't a git project: ${target}`)
             setView("log")
             return
           }

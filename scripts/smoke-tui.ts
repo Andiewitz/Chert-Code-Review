@@ -168,7 +168,7 @@ async function phase2Tests(): Promise<void> {
       await setup.mockInput.pressKey("RETURN");
       await setup.renderOnce();
       frame = setup.captureCharFrame();
-      assert(frame.includes("not inside a git repository:"), "bogus path shows error");
+      assert(frame.includes("that folder isn't a git project:"), "bogus path shows error");
       assert(frame.includes("found here") || frame.includes("recent"), "stays in picker after bogus path");
 
       // subfolder of alpha opens alpha root (typed as non-slash relative path)
