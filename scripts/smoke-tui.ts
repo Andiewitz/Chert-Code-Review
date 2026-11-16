@@ -185,12 +185,13 @@ async function phase2Tests(): Promise<void> {
       await setup.renderOnce();
       // recent list now alpha, beta; select alpha (recent) and forget
       const recentsBeforeX = loadRecent();
-      await setup.mockInput.pressKey("x");
+      await setup.mockInput.pressKeys(["\u001B[3~"]);
+      await new Promise((r) => setTimeout(r, 60));
       await setup.renderOnce();
       frame = setup.captureCharFrame();
       const recentsAfterX = loadRecent();
-      assert(recentsAfterX.length === recentsBeforeX.length - 1, "x forgets one recent entry");
-      assert(frame.includes("forgot "), "x shows forgot status");
+      assert(recentsAfterX.length === recentsBeforeX.length - 1, "Delete removes one recent entry");
+      assert(frame.includes("removed from the list"), "Delete shows removed status");
     } finally {
       await setup.dispose().catch(() => {});
     }

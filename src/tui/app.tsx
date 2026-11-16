@@ -3,7 +3,7 @@ import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption, SelectRenderable } from "@opentui/core"
 import { realpathSync } from "node:fs"
-import { basename, resolve } from "node:path"
+import { basename, dirname, resolve } from "node:path"
 import { currentBranch, listChangedFiles, loadPatch } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
@@ -28,6 +28,7 @@ import {
   findReposBelow,
   forgetProject,
   loadRecent,
+  projectSummary,
   resolveProjectRoot,
 } from "../projects"
 
@@ -204,6 +205,7 @@ export function ReviewApp() {
 
   const [projectPickerItems, setProjectPickerItems] = createSignal<PickerItem[]>([])
   const [projectPickerIndex, setProjectPickerIndex] = createSignal(0)
+  const [highlightedSummary, setHighlightedSummary] = createSignal<{ branch: string; changedCount: number } | undefined>(undefined)
 
   const activeLabel = createMemo(() => {
     const active = connector()
@@ -216,11 +218,11 @@ export function ReviewApp() {
     const m = mode()
     const v = view()
     if (m === "browse") {
-      if (v === "projects") return "j/k select · Enter open · x forget · i ask · o projects · Ctrl+C quit"
+      if (v === "projects") return "Up/Down choose · Enter open · Esc back · Ctrl+C quit"
       if (v === "tree") return "j/k rows · Enter open · i ask · Tab views · Ctrl+C quit"
       return "j/k files · space/b scroll · i ask · o projects · Ctrl+C quit"
     }
-    if (v === "projects") return "↑↓ select · Enter open · / commands · Tab views · Ctrl+C quit"
+    if (v === "projects") return "Up/Down choose · Enter open · Esc back · Ctrl+C quit"
     if (v === "tree") return "↑↓ rows · Enter open · / commands · Tab views · Ctrl+C quit"
     return "↑↓ files · Esc browse · / commands · Tab views · Ctrl+C quit"
   }
@@ -308,35 +310,54 @@ export function ReviewApp() {
     setPickerOpen(false)
   }
 
-  function refreshProjectPicker(): void {
+  function refreshProjectPicker(resetIndex = false): void {
     try {
       const recents = loadRecent()
       const recentReals = new Set(recents.map((r) => toRealPath(r.path)))
-      const items: PickerItem[] = recents.map((r) => ({
+      const recentItems: PickerItem[] = recents.map((r) => ({
         path: resolve(r.path),
         name: basename(resolve(r.path)) || resolve(r.path),
         kind: "recent" as const,
       }))
-      const found = findReposBelow(cwd())
-      for (const p of found) {
-        const abs = resolve(p)
-        const real = toRealPath(abs)
-        if (recentReals.has(real)) continue
-        items.push({ path: abs, name: basename(abs) || abs, kind: "found" })
+      const foundItems: PickerItem[] = []
+      const scanBases = [cwd()]
+      if (hasProject()) {
+        try { scanBases.push(dirname(cwd())) } catch { /* ignore */ }
       }
-      setProjectPickerItems(items)
-      const next = Math.max(0, Math.min(projectPickerIndex(), Math.max(0, items.length - 1)))
+      const seen = new Set(recentReals)
+      for (const base of scanBases) {
+        for (const pp of findReposBelow(base)) {
+          try {
+            const abs = resolve(pp)
+            const real = toRealPath(abs)
+            if (seen.has(real)) continue
+            seen.add(real)
+            foundItems.push({ path: abs, name: basename(abs) || abs, kind: "found" })
+          } catch { /* ignore */ }
+        }
+      }
+      foundItems.sort((a, b) => a.name.localeCompare(b.name))
+      const ordered = [...recentItems, ...foundItems]
+      setProjectPickerItems(ordered)
+      const next = resetIndex ? 0 : Math.max(0, Math.min(projectPickerIndex(), Math.max(0, ordered.length - 1)))
       setProjectPickerIndex(next)
       projectPickerSelectRef?.setSelectedIndex(next)
+      try {
+        const item = ordered[next]
+        setHighlightedSummary(item ? projectSummary(item.path) : undefined)
+      } catch {
+        setHighlightedSummary(undefined)
+      }
     } catch {
       setProjectPickerItems([])
       setProjectPickerIndex(0)
+      setHighlightedSummary(undefined)
     }
   }
 
   function openProjectPicker(): void {
     if (view() !== "projects") setPreviousView(view() as "review" | "tree" | "log")
-    refreshProjectPicker()
+    refreshProjectPicker(true)
     setView("projects")
   }
 
@@ -374,10 +395,19 @@ export function ReviewApp() {
 
   function selectProjectPickerIndex(index: number): void {
     const list = projectPickerItems()
-    if (list.length === 0) return
+    if (list.length === 0) {
+      setHighlightedSummary(undefined)
+      return
+    }
     const i = Math.max(0, Math.min(index, list.length - 1))
     setProjectPickerIndex(i)
     projectPickerSelectRef?.setSelectedIndex(i)
+    try {
+      const item = list[i]
+      setHighlightedSummary(item ? projectSummary(item.path) : undefined)
+    } catch {
+      setHighlightedSummary(undefined)
+    }
   }
 
   function openSelectedProject(): void {
@@ -393,7 +423,7 @@ export function ReviewApp() {
       return
     }
     if (item.kind !== "recent") {
-      setStatus("not a recent project")
+      setStatus("this one isn't in your recent list")
       return
     }
     try {
@@ -401,8 +431,8 @@ export function ReviewApp() {
     } catch {
       // ignore
     }
-    refreshProjectPicker()
-    setStatus(`forgot ${item.name}`)
+    refreshProjectPicker(true)
+    setStatus("removed from the list (your files were not touched)")
   }
 
   // Synchronous loads: git is fast, and sync state updates render
@@ -987,7 +1017,8 @@ export function ReviewApp() {
     const typingCommand = commandQuery() !== null
     const showList = picking || (typingCommand && list.length > 0)
 
-    if (view() === "projects" && (inputRef?.value ?? "") === "" && key.name === "x" && !showList) {
+    if (view() === "projects" && (inputRef?.value ?? "") === "" && !showList &&
+        (key.name === "delete" || key.name === "Delete" || key.sequence === "\u001B[3~")) {
       key.preventDefault()
       forgetSelectedProject()
       return
@@ -1136,7 +1167,7 @@ export function ReviewApp() {
                     when={hasProject()}
                     fallback={
                       <box flexGrow={1} paddingLeft={1}>
-                        <text fg={COLORS.dim}> no project open, use /project</text>
+                        <text fg={COLORS.dim}> No project open. Press Esc, then pick Pick another project.</text>
                       </box>
                     }
                   >
@@ -1203,7 +1234,7 @@ export function ReviewApp() {
                   when={hasProject()}
                   fallback={
                     <box flexGrow={1} paddingLeft={1}>
-                      <text fg={COLORS.dim}> no project open, use /project</text>
+                      <text fg={COLORS.dim}> No project open. Press Esc, then pick Pick another project.</text>
                     </box>
                   }
                 >
@@ -1242,33 +1273,45 @@ export function ReviewApp() {
           </Show>
         }
       >
-        <Show
-          when={projectPickerItems().length > 0}
-          fallback={
-            <box flexGrow={1} paddingLeft={1}>
-              <text fg={COLORS.dim}> no projects yet. type a path below (like ~/code/myapp) and press Enter</text>
-            </box>
-          }
-        >
-          <select
-            ref={(el: SelectRenderable) => {
-              projectPickerSelectRef = el
-              el.setSelectedIndex(projectPickerIndex())
-            }}
-            flexGrow={1}
-            options={projectPickerOptions()}
-            showDescription={true}
-            showScrollIndicator={true}
-            backgroundColor={COLORS.bg}
-            focusedBackgroundColor={COLORS.bg}
-            textColor={COLORS.text}
-            focusedTextColor={COLORS.bright}
-            selectedBackgroundColor={COLORS.selectedBg}
-            selectedTextColor={COLORS.bright}
-            descriptionColor={COLORS.dim}
-            selectedDescriptionColor={COLORS.dim}
-          />
-        </Show>
+        <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+          <text fg={COLORS.bright}>Which project do you want to review?</text>
+          <box height={1} />
+          <Show
+            when={projectPickerItems().length > 0}
+            fallback={
+              <text fg={COLORS.dim}>No projects yet. Paste a folder path below, like ~/code/myapp, and press Enter.</text>
+            }
+          >
+            <select
+              ref={(el: SelectRenderable) => {
+                projectPickerSelectRef = el
+                el.setSelectedIndex(projectPickerIndex())
+              }}
+              flexGrow={1}
+              options={projectPickerOptions()}
+              showDescription={true}
+              showScrollIndicator={true}
+              backgroundColor={COLORS.bg}
+              focusedBackgroundColor={COLORS.bg}
+              textColor={COLORS.text}
+              focusedTextColor={COLORS.bright}
+              selectedBackgroundColor={COLORS.selectedBg}
+              selectedTextColor={COLORS.bright}
+              descriptionColor={COLORS.dim}
+              selectedDescriptionColor={COLORS.dim}
+            />
+          </Show>
+          <text fg={COLORS.dim}>
+            {(() => {
+              const item = projectPickerItems()[projectPickerIndex()]
+              const sum = highlightedSummary()
+              if (item === undefined) return ""
+              if (sum === undefined) return `${item.name}`
+              return `${item.name} is on branch ${sum.branch} with ${sum.changedCount} changed files`
+            })()}
+          </text>
+          <text fg={COLORS.dim}>or paste a folder path here, then press Enter</text>
+        </box>
       </Show>
 
       <Show
