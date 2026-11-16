@@ -24,47 +24,39 @@ You can also run `chert [path]` to open the TUI directly in a specific project (
 
 Keys inside the TUI:
 
-The app starts in **prompt mode** (`>` row). Press `Esc` with an empty prompt to
-enter **browse mode** (`· ` row); press `i` to return to prompt mode.
+No modes: if the prompt box is empty, arrows and Enter control the screen;
+if it has text, typing, Enter and arrows go to the text.
 
-Prompt mode:
-
-| key | action |
-|---|---|
-| `↑` / `↓` (empty prompt) | pick a file (review), move rows (tree), move (picker) |
-| `Tab` | cycle review → tree → log (picker: back if a project is open) |
-| `Enter` | submit prompt / open tree file / open picker project |
-| `Esc` | clear input, or switch to browse mode when empty |
-| `Ctrl+P` | command picker (all commands) |
-| `/` | command suggestions (type to filter) |
-| `Ctrl+C` | quit |
-
-Browse mode:
+Review screen:
 
 | key | action |
 |---|---|
-| `j` / `↓` | next file / row |
-| `k` / `↑` | previous file / row |
-| `Space` / `PgDn` / `Ctrl+D` | scroll down (diff or answer pane) |
-| `b` / `PgUp` / `Ctrl+U` | scroll up |
-| `g` / `G` | top / bottom |
-| `]` / `[` | next / previous diff hunk |
-| `Tab` | cycle views |
-| `Enter` | open file (tree) / open project (picker) / prompt mode (review) |
-| `i` | prompt mode |
-| `/` | prompt mode with `/` prefilled |
-| `r` | refresh |
-| `o` | open project picker |
-| `a` / `A` | toggle answer pane / switch scroll target |
-| `?` | help |
-| `q` | quit |
+| `Left` / `Right` | move the highlight across the action bar |
+| `Enter` | activate the highlighted action |
+| `Up` / `Down` | scroll the diff a few lines |
+| `PgUp` / `PgDn` | scroll the answer pane (when open) or the diff |
+| `Esc` | open the menu (or close it) |
+| `Tab` | cycle review → tree → log (not advertised) |
 | `Ctrl+C` | quit |
+
+Project picker:
+
+| key | action |
+|---|---|
+| `Up` / `Down` | choose a project |
+| `Enter` | open the highlighted project (or a typed path) |
+| `Delete` | remove a recent project from the list (files untouched) |
+| `Esc` | go back (only if a project is already open) |
+| `Ctrl+C` | quit |
+
+Done screen and menus: `Up`/`Down` choose, `Enter` go, `Esc` close.
 
 Other:
 - `Enter` in the tree — open the selected file's diff in the review view
 - `Enter` in the project picker — open the selected project
-- `x` in the project picker — forget a selected recent project
+- `Delete` in the project picker — remove a recent project from the list
 - `Esc` in the project picker — go back to the previous view (if a project is open)
+- `Ctrl+C` — quit (`/quit` also works)
 
 ## The prompt
 
