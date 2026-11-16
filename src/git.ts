@@ -1,3 +1,4 @@
+// Invariant: process.cwd() must be the repo root whenever git.ts runs.
 // Git data layer: local review of working-tree changes vs HEAD (staged +
 // unstaged combined), plus untracked files synthesized as all-added diffs.
 // Renames are disabled (`--no-renames`) so every record has a single path.
@@ -146,6 +147,20 @@ export function listProjectFiles(): string[] {
     .split("\0")
     .filter(Boolean);
   return Array.from(new Set([...tracked, ...untracked])).sort((a, b) => a.localeCompare(b));
+}
+
+export function currentBranch(): string {
+  try {
+    const proc = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (proc.exitCode !== 0) return "no commits";
+    const out = proc.stdout.toString().trim();
+    return out === "" ? "no commits" : out;
+  } catch {
+    return "no commits";
+  }
 }
 
 function synthesizedAddedPatch(path: string): string {

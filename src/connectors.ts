@@ -70,7 +70,7 @@ interface StoredConfig {
   active?: { connector: string; model?: string };
 }
 
-function configDir(): string {
+export function configDir(): string {
   return process.env.CHERT_CONFIG_DIR ?? join(homedir(), ".chert");
 }
 

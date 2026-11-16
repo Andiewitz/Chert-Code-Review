@@ -16,16 +16,23 @@ Local git state in the current directory — no network needed:
 ```sh
 bun install        # install deps
 bun dev            # open the review TUI (needs a real terminal)
+bun dev [path]     # open the review TUI for a path/repo
 bun dev --help     # CLI help
 ```
 
+You can also run `chert [path]` to open the TUI directly in a specific project (or a subfolder inside a git repo; chert opens the repo root).
+
 Keys inside the TUI:
 
-- `↑` / `↓` (with an empty prompt) — pick a file in review, or move through the
-  tree; the diff pane loads lazily per file
+- `↑` / `↓` (with an empty prompt) — pick a file in review, move through the
+  tree, or move in the project picker; the diff pane loads lazily per file
 - `/` — commands (see below); anything without `/` goes to the agent
-- `Tab` — cycle review → tree → log/transcript
+- `Tab` — cycle review → tree → log/transcript (in the project picker with a
+  project open, Tab goes back)
 - `Enter` in the tree — open the selected file's diff in the review view
+- `Enter` in the project picker — open the selected project
+- `x` in the project picker — forget a selected recent project
+- `Esc` in the project picker — go back to the previous view (if a project is open)
 - `Ctrl+C` — quit (`/quit` also works)
 
 ## The prompt
@@ -39,7 +46,9 @@ in the current project directory (opencode must be installed; no API keys needed
 /refresh           re-scan the working tree
 /open <query>      jump to a file
 /run <command>     run a shell command in the current project
-/cd <dir>          switch project directory
+/cd <dir>          switch project directory (opens repo root)
+/project           open the project picker
+/project <path>    switch to a project (like /cd)
 /cwd               show the current project
 /tree              whole project tree (folders, nested files, M/D/?? marks)
 ```
