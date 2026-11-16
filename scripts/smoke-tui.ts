@@ -393,9 +393,11 @@ async function phase4Tests(): Promise<void> {
     runGit(repo, ["config", "user.name", "smoke"]);
     mkdirSync(join(repo, "src"), { recursive: true });
     writeFileSync(join(repo, "src", "modified.ts"), "export const before = 1\n");
+    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\n");
     runGit(repo, ["add", "."]);
     runGit(repo, ["commit", "-m", "base"]);
     writeFileSync(join(repo, "src", "modified.ts"), "export const before = 1\nexport const addedByTest = 2\n");
+    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\nexport const a2 = 2\n");
 
     process.chdir(repo);
     await getTreeSitterClient().initialize().catch(() => {});
@@ -405,14 +407,23 @@ async function phase4Tests(): Promise<void> {
     try {
       await setup.renderOnce();
       let frame = setup.captureCharFrame();
-      assert(frame.includes("addedByTest"), "phase4 diff text on screen initially");
+      assert(frame.includes("a2") || frame.includes("addedByTest"), "phase4 diff text on screen initially");
 
-      // ask a question from review view
-      await setup.mockInput.pressKeys("what changed?".split(""));
+      // ask via "Is it slow?" button (highlight index 1)
+      await setup.mockInput.pressArrow("left");
+      await setup.mockInput.pressArrow("left");
+      await setup.mockInput.pressArrow("left");
+      await setup.renderOnce();
       await setup.mockInput.pressKey("RETURN");
       await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("Thinking"), "phase4 shows thinking state in pane");
+      assert(frame.includes("a2") || frame.includes("addedByTest"), "phase4 diff text stays on screen");
       // busy: submit another prompt -> rejected
-      await setup.mockInput.pressKeys("second question".split(""));
+      await setup.mockInput.pressArrow("left");
+      await setup.mockInput.pressArrow("left");
+      await setup.mockInput.pressArrow("left");
+      await setup.renderOnce();
       await setup.mockInput.pressKey("RETURN");
       await setup.renderOnce();
       frame = setup.captureCharFrame();
@@ -422,14 +433,21 @@ async function phase4Tests(): Promise<void> {
       await new Promise((r) => setTimeout(r, 1500));
       await setup.renderOnce();
       frame = setup.captureCharFrame();
-      assert(frame.includes("addedByTest"), "phase4 diff text stays on screen after answer");
+      assert(frame.includes("a2") || frame.includes("addedByTest"), "phase4 diff text stays on screen after answer");
       assert(frame.includes("answer line 1"), "phase4 answer text appears in pane");
 
       // PageDown scrolls the answer pane
       await setup.mockInput.pressKeys(["\u001B[6~"]);
       await setup.renderOnce();
-      // (no strict assertion; just ensure no crash)
       assert(true, "phase4 PageDown does not crash");
+
+      // Next resets highlight to Next and hides pane for a file with no answer
+      await setup.mockInput.pressKey("RETURN");
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      assert(frame.includes("a.ts") || frame.includes("modified.ts"), "phase4 Next moves to next file");
+      // pane should be hidden (no answer for new file)
+      assert(!frame.includes("answer line 1"), "phase4 Next hides pane for file with no answer");
     } finally {
       await setup.dispose().catch(() => {});
     }

@@ -219,6 +219,8 @@ export function ReviewApp() {
   const [scrollTarget, setScrollTarget] = createSignal<"diff" | "answer">("diff")
   const [lastQuestion, setLastQuestion] = createSignal("")
   const [lastAnswer, setLastAnswer] = createSignal("")
+  const [answerFile, setAnswerFile] = createSignal("")
+  const [answerIsError, setAnswerIsError] = createSignal(false)
 
   const activeLabel = createMemo(() => {
     const active = connector()
@@ -465,6 +467,8 @@ export function ReviewApp() {
     setMenuOpen(false)
     setAllFilesOpen(false)
     setAnswerOpen(false)
+    setAnswerFile("")
+    setAnswerIsError(false)
     try {
       setFiles(listChangedFiles())
       try {
@@ -577,6 +581,7 @@ export function ReviewApp() {
     const idx = list.findIndex((f) => f.path === path)
     if (idx !== -1) selectFile(idx)
     setAction(4)
+    if (answerFile() !== path) setAnswerOpen(false)
   }
 
   function nextFile(): void {
@@ -698,6 +703,7 @@ export function ReviewApp() {
     setLastQuestion(prompt)
     setBusy(true)
     setLastAnswer("")
+    setAnswerIsError(false)
     const startedAt = Date.now()
     let statusPrefix = "Thinking… "
     setStatus("Thinking… 0s")
@@ -722,6 +728,7 @@ export function ReviewApp() {
           const better = `No AI is connected yet. Easiest: get a free key at ${prov.keyUrl}, then type /connect ${prov.id} YOUR_KEY and then /use ${prov.id}.`
           addEntry("error", better)
           setLastAnswer(better)
+          setAnswerIsError(true)
           return
         }
         statusPrefix = "Thinking… "
@@ -736,6 +743,7 @@ export function ReviewApp() {
         const msg = `unknown connector "${active}"`
         addEntry("error", msg)
         setLastAnswer(msg)
+        setAnswerIsError(true)
         return
       }
       const key = resolveKey(provider.id)
@@ -743,6 +751,7 @@ export function ReviewApp() {
         const msg = `No AI is connected yet. Easiest: get a free key at ${provider.keyUrl}, then type /connect ${provider.id} YOUR_KEY and then /use ${provider.id}.`
         addEntry("error", msg)
         setLastAnswer(msg)
+        setAnswerIsError(true)
         return
       }
       const useModel = model() ?? provider.defaultModel
@@ -756,11 +765,13 @@ export function ReviewApp() {
       const msg = error instanceof Error ? error.message : String(error)
       addEntry("error", msg)
       setLastAnswer(msg)
+      setAnswerIsError(true)
     } finally {
       clearTimer()
       setBusy(false)
       const v = view()
       if (v === "review") {
+        setAnswerFile(file()?.path ?? "")
         setAnswerOpen(true)
         setAction(4)
         setStatus("")
@@ -1270,18 +1281,21 @@ export function ReviewApp() {
       return
     }
     if (i === 1) {
+      if (busy()) { setStatus("Still thinking about your last question."); return }
       markAsked(cur)
       setAction(4)
       void askAgent(QUESTIONS.slow(cur))
       return
     }
     if (i === 2) {
+      if (busy()) { setStatus("Still thinking about your last question."); return }
       markAsked(cur)
       setAction(4)
       void askAgent(QUESTIONS.messy(cur))
       return
     }
     if (i === 3) {
+      if (busy()) { setStatus("Still thinking about your last question."); return }
       markAsked(cur)
       setAction(4)
       void askAgent(QUESTIONS.safe(cur))
@@ -1303,6 +1317,7 @@ export function ReviewApp() {
     if (menuOpen()) return "Up/Down choose · Enter go · Esc close · Ctrl+C quit"
     if (allFilesOpen()) return "Up/Down choose · Enter jump · Esc close · Ctrl+C quit"
     // review
+    if (answerOpen() && answerFile() === (file()?.path ?? "")) return "Left/Right choose · Enter go · Up/Down scroll · PgUp/PgDn read the answer · Esc menu · Ctrl+C quit"
     return "Left/Right choose · Enter go · Up/Down scroll · Esc menu · Ctrl+C quit"
   }
 
@@ -1451,7 +1466,7 @@ export function ReviewApp() {
                             </Show>
                           </scrollbox>
                           {/* Answer pane */}
-                          <Show when={answerOpen()}>
+                          <Show when={answerOpen() && answerFile() === (file()?.path ?? "")}>
                             <box height="40%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
                               <text fg={COLORS.dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "…" : lastQuestion()}  ·  ${activeLabel()}`}</text>
                               <scrollbox
@@ -1459,7 +1474,7 @@ export function ReviewApp() {
                                 flexGrow={1}
                                 backgroundColor={COLORS.bg}
                               >
-                                <text wrapMode="word" fg={COLORS.text}>{lastAnswer()}</text>
+                                <text wrapMode="word" fg={busy() ? COLORS.dim : (answerIsError() ? COLORS.danger : COLORS.text)}>{busy() ? status() : lastAnswer()}</text>
                               </scrollbox>
                             </box>
                           </Show>
