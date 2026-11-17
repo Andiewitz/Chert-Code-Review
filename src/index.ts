@@ -5,18 +5,21 @@ const VERSION = "0.4.0";
 function printHelp(): void {
   console.log(`chert v${VERSION}
 
-Usage: chert [command] [options]
+Review the local changes in a git repository — no network needed.
+
+Usage: chert [path]
+
+  path            a project folder or any subfolder of it (default: the current folder)
 
 Commands:
-  (default)       Open the review TUI
-  greet [name]    Say hello (example command, replace me)
+  (default)       open the review TUI
+  tui [path]      same thing, spelled out
 
-Options:
-  -h, --help      Show this help message
-  -v, --version   Show version`);
+Keys inside the TUI: ↑↓ files · ←→ action · Enter run · Space reviewed ·
+  h highlight · Esc menu · Ctrl+C quit. Type / for commands.`);
 }
 
-async function launchTui(): Promise<void> {
+async function launchTui(startDir?: string): Promise<void> {
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
     console.error("chert needs an interactive terminal (TTY) to open the review UI.");
     process.exit(1);
@@ -26,16 +29,29 @@ async function launchTui(): Promise<void> {
   const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin");
   ensureSolidTransformPlugin();
   const { launch } = await import("./tui/app.tsx");
-  await launch();
+  await launch(startDir);
+}
+
+function isFlagOrKnownCommand(arg: string): boolean {
+  return (
+    arg === "tui" ||
+    arg === "-h" ||
+    arg === "--help" ||
+    arg === "-v" ||
+    arg === "--version"
+  );
 }
 
 const args = Bun.argv.slice(2);
 const [command, ...rest] = args;
 
 switch (command) {
-  case undefined:
-  case "tui": {
+  case undefined: {
     await launchTui();
+    break;
+  }
+  case "tui": {
+    await launchTui(rest[0]);
     break;
   }
   case "-h":
@@ -48,13 +64,21 @@ switch (command) {
     console.log(VERSION);
     break;
   }
-  case "greet": {
-    const name = rest[0] ?? "world";
-    console.log(`Hello, ${name}!`);
-    break;
-  }
   default: {
-    console.error(`Unknown command: ${command}`);
+    if (!isFlagOrKnownCommand(command)) {
+      try {
+        const { statSync } = await import("node:fs");
+        const { expandPath } = await import("./projects.ts");
+        const p = expandPath(command);
+        if (statSync(p).isDirectory()) {
+          await launchTui(command);
+          break;
+        }
+      } catch {
+        // fall through to error
+      }
+    }
+    console.error(`no such folder or command: ${command}`);
     printHelp();
     process.exit(1);
   }

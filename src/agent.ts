@@ -15,6 +15,7 @@ export function opencodeAvailable(): boolean {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
+        env: { ...process.env },
       });
       available = proc.exitCode === 0;
     } catch {
@@ -30,6 +31,7 @@ export async function runAgent(prompt: string, cwd: string): Promise<string> {
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
+    env: { ...process.env },
   });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),

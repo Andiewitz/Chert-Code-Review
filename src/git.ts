@@ -1,6 +1,11 @@
+// Invariant: process.cwd() must be the repo root whenever git.ts runs.
 // Git data layer: local review of working-tree changes vs HEAD (staged +
 // unstaged combined), plus untracked files synthesized as all-added diffs.
 // Renames are disabled (`--no-renames`) so every record has a single path.
+//
+// Read-only: chert never writes to the user's repo. All git access goes
+// through run(), which allowlists the first argument and sets
+// GIT_OPTIONAL_LOCKS=0 so a concurrent `git commit` is not blocked.
 //
 // Synchronous on purpose: git calls are fast, and synchronous state updates
 // render deterministically regardless of the host renderer's event loop.
@@ -16,15 +21,44 @@ export interface ReviewFile {
   deletions: number;
 }
 
-function run(args: string[]): string {
+export type ReviewSource =
+  | { kind: "working" }
+  | { kind: "staged" }
+  | { kind: "branch"; base: string; mergeBase: string }
+  | { kind: "commit"; sha: string; parent: string | "empty"; subject: string }
+
+// Allowlist of git first-arguments. Anything else throws.
+const ALLOWED = new Set([
+  "rev-parse",
+  "diff",
+  "ls-files",
+  "show",
+  "merge-base",
+  "symbolic-ref",
+  "rev-list",
+  "log",
+  "cat-file",
+  "hash-object",
+])
+
+export function run(args: string[]): string {
+  if (args.length === 0) throw new Error("git: no command given")
+  if (!ALLOWED.has(args[0])) {
+    throw new Error(`git: command not allowed: ${args[0]}`)
+  }
   const proc = Bun.spawnSync(["git", ...args], {
     stdout: "pipe",
     stderr: "pipe",
-  });
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  })
   if (proc.exitCode !== 0) {
-    throw new Error(proc.stderr.toString().trim() || `git ${args.join(" ")} exited with code ${proc.exitCode}`);
+    throw new Error(proc.stderr.toString().trim() || `git ${args.join(" ")} exited with code ${proc.exitCode}`)
   }
-  return proc.stdout.toString();
+  return proc.stdout.toString()
+}
+
+export function gitDir(): string {
+  return run(["rev-parse", "--absolute-git-dir"]).trim()
 }
 
 export function isGitRepository(): boolean {
@@ -49,7 +83,6 @@ function statusFromCode(code: string): FileStatus {
     case "D":
       return "deleted";
     default:
-      // M, T (type change), and anything else we display as modified
       return "modified";
   }
 }
@@ -71,27 +104,100 @@ function countLines(path: string): number {
   }
 }
 
-export function listChangedFiles(): ReviewFile[] {
+export function validateRef(value: string): boolean {
+  if (typeof value !== "string") return false;
+  if (value.length === 0 || value.length > 200) return false;
+  if (value.startsWith("-")) return false;
+  if (value.includes("\n") || value.includes("\0")) return false;
+  try {
+    run(["rev-parse", "--verify", "--quiet", `${value}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function emptyTreeId(): string {
+  const proc = Bun.spawnSync(["git", "hash-object", "-t", "tree", "--stdin"], {
+    stdin: Buffer.from(""),
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  if (proc.exitCode !== 0) throw new Error(proc.stderr.toString().trim() || "hash-object failed");
+  return proc.stdout.toString().trim();
+}
+
+function hasHead(): boolean {
+  try {
+    run(["rev-parse", "--verify", "HEAD"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function currentBranch(): string {
+  try {
+    const out = run(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+    return out === "" ? "no commits" : out;
+  } catch {
+    return "no commits";
+  }
+}
+
+function diffArgs(source: ReviewSource): { args: string[]; untracked: boolean } {
+  switch (source.kind) {
+    case "working": {
+      if (!hasHead()) return { args: [], untracked: true };
+      return { args: ["diff", "HEAD", "--no-renames", "--name-status", "-z", "--"], untracked: true };
+    }
+    case "staged": {
+      return { args: ["diff", "--cached", "--no-renames", "--name-status", "-z", "--"], untracked: false };
+    }
+    case "branch": {
+      return { args: ["diff", source.mergeBase, "--no-renames", "--name-status", "-z", "--"], untracked: true };
+    }
+    case "commit": {
+      const parent = source.parent === "empty" ? emptyTreeId() : source.parent;
+      return { args: ["diff", parent, source.sha, "--no-renames", "--name-status", "-z", "--"], untracked: false };
+    }
+  }
+}
+
+function diffCountsArgs(source: ReviewSource): string[] | null {
+  switch (source.kind) {
+    case "working": {
+      if (!hasHead()) return null;
+      return ["diff", "HEAD", "--no-renames", "--numstat", "-z", "--"];
+    }
+    case "staged":
+      return ["diff", "--cached", "--no-renames", "--numstat", "-z", "--"];
+    case "branch":
+      return ["diff", source.mergeBase, "--no-renames", "--numstat", "-z", "--"];
+    case "commit": {
+      const parent = source.parent === "empty" ? emptyTreeId() : source.parent;
+      return ["diff", parent, source.sha, "--no-renames", "--numstat", "-z", "--"];
+    }
+  }
+}
+
+export function listChangedFiles(source: ReviewSource = { kind: "working" }): ReviewFile[] {
   if (!isGitRepository()) {
     throw new Error("not a git repository (or any of the parent directories)");
   }
 
-  // A repo without commits has no HEAD; all content is covered by untracked.
-  const hasHead = ((): boolean => {
-    try {
-      run(["rev-parse", "--verify", "HEAD"]);
-      return true;
-    } catch {
-      return false;
-    }
-  })();
+  const { args: statusArgs, untracked } = diffArgs(source);
 
   const tracked: ReviewFile[] = [];
-  if (hasHead) {
-    const statuses = run(["diff", "HEAD", "--no-renames", "--name-status", "-z"]);
-    const numstat = run(["diff", "HEAD", "--no-renames", "--numstat", "-z"]);
+  // For working with no HEAD, skip tracked diff (all untracked)
+  const skipTracked = source.kind === "working" && !hasHead();
 
-    // name-status -z: strict [status, path] pairs
+  if (!skipTracked && statusArgs.length > 0) {
+    const statuses = run(statusArgs);
+    const countsArgs = diffCountsArgs(source);
+    const numstat = countsArgs ? run(countsArgs) : "";
+
     const statusByPath = new Map<string, FileStatus>();
     const statusTokens = statuses.split("\0");
     for (let i = 0; i + 1 < statusTokens.length; i += 2) {
@@ -99,13 +205,14 @@ export function listChangedFiles(): ReviewFile[] {
       statusByPath.set(statusTokens[i + 1], statusFromCode(statusTokens[i]));
     }
 
-    // numstat -z: NUL-terminated records of "add\tdelete\tpath"
     const countsByPath = new Map<string, { additions: number; deletions: number }>();
-    for (const record of numstat.split("\0")) {
-      if (record === "") continue;
-      const [add, del, ...pathParts] = record.split("\t");
-      const path = pathParts.join("\t");
-      countsByPath.set(path, { additions: parseCounts(add), deletions: parseCounts(del) });
+    if (numstat) {
+      for (const record of numstat.split("\0")) {
+        if (record === "") continue;
+        const [add, del, ...pathParts] = record.split("\t");
+        const path = pathParts.join("\t");
+        countsByPath.set(path, { additions: parseCounts(add), deletions: parseCounts(del) });
+      }
     }
 
     for (const [path, status] of statusByPath) {
@@ -114,30 +221,43 @@ export function listChangedFiles(): ReviewFile[] {
     }
   }
 
-  // Untracked files (respects .gitignore) become all-added diffs.
-  const untrackedPaths = run(["ls-files", "--others", "--exclude-standard", "-z"])
-    .split("\0")
-    .filter(Boolean);
+  let untrackedFiles: ReviewFile[] = [];
+  if (untracked) {
+    const untrackedPaths = run(["ls-files", "--others", "--exclude-standard", "-z"])
+      .split("\0")
+      .filter(Boolean);
+    untrackedFiles = untrackedPaths.map((path) => ({
+      path,
+      status: "untracked" as const,
+      additions: countLines(path),
+      deletions: 0,
+    }));
+  }
 
-  const untracked: ReviewFile[] = untrackedPaths.map((path) => ({
-    path,
-    status: "untracked",
-    additions: countLines(path),
-    deletions: 0,
-  }));
-
-  return [...tracked, ...untracked].sort((a, b) => a.path.localeCompare(b.path));
+  return [...tracked, ...untrackedFiles].sort((a, b) => a.path.localeCompare(b.path));
 }
 
-export function loadPatch(file: ReviewFile): string {
+export function loadPatch(file: ReviewFile, source: ReviewSource = { kind: "working" }): string {
   if (file.status === "untracked") {
     return synthesizedAddedPatch(file.path);
   }
-  return run(["diff", "HEAD", "--no-renames", "--no-color", "--", file.path]);
+  switch (source.kind) {
+    case "working": {
+      if (!hasHead()) return synthesizedAddedPatch(file.path);
+      return run(["diff", "HEAD", "--no-renames", "--no-color", "--", file.path]);
+    }
+    case "staged":
+      return run(["diff", "--cached", "--no-renames", "--no-color", "--", file.path]);
+    case "branch":
+      return run(["diff", source.mergeBase, "--no-renames", "--no-color", "--", file.path]);
+    case "commit": {
+      const parent = source.parent === "empty" ? emptyTreeId() : source.parent;
+      return run(["diff", parent, source.sha, "--no-renames", "--no-color", "--", file.path]);
+    }
+  }
 }
 
-/** Every file git knows about in the working tree: tracked plus untracked
- * (respects .gitignore). Used by the project tree view. */
+/** Every file git knows about in the working tree: tracked plus untracked. */
 export function listProjectFiles(): string[] {
   const tracked = run(["ls-files", "-z"])
     .split("\0")
@@ -148,12 +268,91 @@ export function listProjectFiles(): string[] {
   return Array.from(new Set([...tracked, ...untracked])).sort((a, b) => a.localeCompare(b));
 }
 
+/** Resolve the base branch for /review branch. */
+export function resolveReviewBase(): string | null {
+  // 1. origin/HEAD
+  try {
+    const out = run(["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]).trim();
+    if (out !== "") {
+      // strip "origin/" prefix
+      const name = out.replace(/^origin\//, "");
+      if (name !== "") return name;
+    }
+  } catch {
+    // fall through
+  }
+  // 2. first existing of main, master, develop
+  for (const cand of ["main", "master", "develop"]) {
+    try {
+      run(["rev-parse", "--verify", "--quiet", `${cand}^{commit}`]);
+      return cand;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+/** List recent commits as { sha, subject }. */
+export function listRecentCommits(limit = 40): { sha: string; subject: string }[] {
+  try {
+    const out = run(["log", `--max-count=${limit}`, "--format=%H%x09%s"])
+    return out
+      .trim()
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((line) => {
+        const idx = line.indexOf("\t")
+        const sha = idx === -1 ? line.trim() : line.slice(0, idx).trim()
+        const subject = idx === -1 ? "" : line.slice(idx + 1).trim()
+        return { sha, subject }
+      })
+  } catch {
+    return []
+  }
+}
+
+/** Get commit subject (truncated). */
+export function commitSubject(sha: string): string {
+  try {
+    return run(["log", "-1", "--format=%s", sha]).trim();
+  } catch {
+    return "";
+  }
+}
+
+/** Resolve a ref to a full sha. Returns null on failure. */
+export function resolveSha(ref: string): string | null {
+  if (!validateRef(ref)) return null;
+  try {
+    return run(["rev-parse", `${ref}^{commit}`]).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Parent sha of a commit, or "empty" if none. Uses first parent for merges. */
+export function commitParent(sha: string): string | "empty" {
+  try {
+    const out = run(["rev-parse", `${sha}^1`]).trim();
+    if (out === "") return "empty";
+    return out;
+  } catch {
+    return "empty";
+  }
+}
+
+/** Merge base of two refs. */
+export function mergeBase(a: string, b: string): string {
+  return run(["merge-base", a, b]).trim();
+}
+
 function synthesizedAddedPatch(path: string): string {
   let content = "";
   try {
     content = readFileSync(path).toString();
   } catch {
-    // unreadable: show an empty added file
+    // unreadable
   }
   const lines = content.split("\n");
   if (lines[lines.length - 1] === "") lines.pop();

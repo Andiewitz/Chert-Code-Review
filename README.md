@@ -16,16 +16,51 @@ Local git state in the current directory — no network needed:
 ```sh
 bun install        # install deps
 bun dev            # open the review TUI (needs a real terminal)
+bun dev [path]     # open the review TUI for a path/repo
 bun dev --help     # CLI help
 ```
 
+You can also run `chert [path]` to open the TUI directly in a specific project (or a subfolder inside a git repo; chert opens the repo root).
+
 Keys inside the TUI:
 
-- `↑` / `↓` (with an empty prompt) — pick a file in review, or move through the
-  tree; the diff pane loads lazily per file
-- `/` — commands (see below); anything without `/` goes to the agent
-- `Tab` — cycle review → tree → log/transcript
+No modes: if the prompt box is empty, keys control the screen; if it has text,
+typing and Enter go to the text.
+
+Review screen (the action bar at the bottom is always visible):
+
+| key | action |
+|---|---|
+| `Up` / `Down` | previous / next file |
+| `Left` / `Right` | move across the action bar: Back · Is it slow? · Is it messy? · Is it safe? · Next |
+| `Enter` | run the highlighted action |
+| `Space` | mark the file reviewed |
+| `h` | highlight mode: `↑↓` moves the line cursor, `Enter` selects a line or range, `Esc` leaves |
+| `PgUp` / `PgDn` | scroll the answer pane (when open) or the diff |
+| `Esc` | open the menu (or close it) |
+| `Ctrl+C` | quit |
+
+Home screen / recent projects (the start screen when you launch outside a git repo,
+and Esc → Recent projects): the purple `chert` wordmark, then your recent projects.
+The highlighted row is bold and accented; `Up`/`Down` moves it, `Enter` opens it.
+
+| key | action |
+|---|---|
+| `Up` / `Down` | choose a project |
+| `Enter` | open the highlighted project (or a typed path) |
+| `Delete` | remove a recent project from the list (files untouched) |
+| `Esc` | go back (only if a project is already open) |
+| `Ctrl+C` | quit |
+
+Done screen and menus: `Up`/`Down` choose, `Enter` go, `Esc` close.
+
+Other:
 - `Enter` in the tree — open the selected file's diff in the review view
+- `/cd <name or path>` — switch to a saved or new project
+- `/cd` — list saved projects
+- `/cd -` — return to the previous project
+- `/projects` — list saved projects
+- `/forget <name or path>` — remove a saved project (files untouched)
 - `Ctrl+C` — quit (`/quit` also works)
 
 ## The prompt
@@ -39,7 +74,10 @@ in the current project directory (opencode must be installed; no API keys needed
 /refresh           re-scan the working tree
 /open <query>      jump to a file
 /run <command>     run a shell command in the current project
-/cd <dir>          switch project directory
+/cd <dir>          switch project directory (opens repo root)
+/cd <name or path> switch to a saved or new project
+/projects          list saved projects
+/forget <name>     remove a saved project
 /cwd               show the current project
 /tree              whole project tree (folders, nested files, M/D/?? marks)
 ```
@@ -62,6 +100,8 @@ provider support — all four use OpenAI-compatible APIs:
 - `/use <id> [model]` — route plain-text prompts to a provider; `/use opencode`
   switches back to the local CLI
 - `/models <id>` — list a provider's models
+- `/themes [name]` — list or switch color theme (default, dark-contrast, whiteout, github)
+- `/home` — open the menu
 - `/disconnect <id>` — remove a saved key
 
 ## Build a standalone executable
