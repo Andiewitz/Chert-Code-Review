@@ -171,3 +171,118 @@ export function resolveHighlights(
 
   return result
 }
+
+
+export interface ParsedAgentHighlight {
+  file: string
+  side: HighlightSide
+  start: number
+  end: number
+  level: "high" | "medium" | "low"
+  note: string
+}
+
+export interface AgentParseResult {
+  highlights: Highlight[]
+  skipped: string[]
+  cleanText: string
+}
+
+const AGENT_BLOCK_RE = /```chert-highlights\s*\n([\s\S]*?)```/
+
+export function parseAgentHighlights(
+  answerText: string,
+  changedFiles: string[],
+  rowsByFile: Map<string, { kind: string; oldNo?: number; newNo?: number; text: string }[]>,
+  existing: Highlight[],
+): AgentParseResult {
+  const skipped: string[] = []
+  const cleaned = answerText.replace(AGENT_BLOCK_RE, "").trim()
+  const match = AGENT_BLOCK_RE.exec(answerText)
+  if (!match) {
+    return { highlights: [], skipped, cleanText: answerText }
+  }
+  let parsed: any
+  try {
+    parsed = JSON.parse(match[1])
+  } catch {
+    return { highlights: [], skipped: ["malformed JSON in highlight block"], cleanText: cleaned }
+  }
+  if (!Array.isArray(parsed)) {
+    return { highlights: [], skipped: ["highlight block is not an array"], cleanText: cleaned }
+  }
+
+  const existingKeys = new Set(existing.map((h) => `${h.path}:${h.side}:${h.start}-${h.end}`))
+  const candidates: ParsedAgentHighlight[] = []
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") { skipped.push("invalid entry"); continue }
+    const file = typeof item.file === "string" ? item.file : ""
+    if (!changedFiles.includes(file)) { skipped.push(`unknown file: ${file}`); continue }
+    const side: HighlightSide = item.side === "old" ? "old" : "new"
+    const start = typeof item.start === "number" ? item.start : NaN
+    const end = typeof item.end === "number" ? item.end : start
+    if (!Number.isFinite(start) || !Number.isFinite(end)) { skipped.push("invalid line numbers"); continue }
+    if (end < start) { skipped.push("end before start"); continue }
+    if (end - start + 1 > 30) { skipped.push("range too large"); continue }
+    const level = item.level === "high" || item.level === "medium" || item.level === "low" ? item.level : null
+    if (level === null) { skipped.push("invalid level"); continue }
+    const note = typeof item.note === "string" ? item.note.trim().slice(0, 200) : ""
+    if (note === "") { skipped.push("empty note"); continue }
+
+    const rows = rowsByFile.get(file)
+    if (!rows) { skipped.push(`no rows for ${file}`); continue }
+    const sideRows = rows.filter((r) => (side === "new" ? (r.kind === "context" || r.kind === "add") : (r.kind === "context" || r.kind === "del")))
+    const lineNoOf = (r: { oldNo?: number; newNo?: number }) => (side === "new" ? (r.newNo ?? 0) : (r.oldNo ?? 0))
+    // validate start/end are real line numbers
+    const startRowIdx = sideRows.findIndex((r) => lineNoOf(r) === start)
+    const endRowIdx = sideRows.findIndex((r) => lineNoOf(r) === end)
+    if (startRowIdx === -1 || endRowIdx === -1 || endRowIdx < startRowIdx) {
+      skipped.push(`line out of range: ${file}:${start}-${end}`)
+      continue
+    }
+    // check consecutive
+    let ok = true
+    for (let k = 0; k <= endRowIdx - startRowIdx; k++) {
+      if (lineNoOf(sideRows[startRowIdx + k]) !== start + k) { ok = false; break }
+    }
+    if (!ok) { skipped.push(`non-consecutive lines: ${file}:${start}-${end}`); continue }
+
+    const key = `${file}:${side}:${start}-${end}`
+    if (existingKeys.has(key)) { skipped.push(`duplicate: ${file}:${start}-${end}`); continue }
+
+    const textLines = sideRows.slice(startRowIdx, endRowIdx + 1).map((r) => r.text)
+    const before = sideRows.slice(Math.max(0, startRowIdx - 2), startRowIdx).map((r) => r.text)
+    const after = sideRows.slice(endRowIdx + 1, endRowIdx + 3).map((r) => r.text)
+
+    candidates.push({ file, side, start, end, level, note })
+    // store text/before/after temporarily by attaching to a parallel array
+    ;(candidates[candidates.length - 1] as any)._text = textLines
+    ;(candidates[candidates.length - 1] as any)._before = before
+    ;(candidates[candidates.length - 1] as any)._after = after
+  }
+
+  // max 8 per answer, highest level first
+  const levelRank = { high: 0, medium: 1, low: 2 }
+  candidates.sort((a, b) => levelRank[a.level] - levelRank[b.level])
+  const chosen = candidates.slice(0, 8)
+  if (candidates.length > 8) {
+    skipped.push(`${candidates.length - 8} over cap`)
+  }
+
+  const highlights: Highlight[] = chosen.map((c, idx) => ({
+    id: `ai-${Date.now()}-${idx}`,
+    path: c.file,
+    side: c.side,
+    start: c.start,
+    end: c.end,
+    text: (c as any)._text,
+    before: (c as any)._before,
+    after: (c as any)._after,
+    by: "ai",
+    level: c.level,
+    note: c.note,
+    createdAt: Date.now(),
+  }))
+
+  return { highlights, skipped, cleanText: cleaned }
+}
