@@ -24,19 +24,20 @@ You can also run `chert [path]` to open the TUI directly in a specific project (
 
 Keys inside the TUI:
 
-No modes: if the prompt box is empty, arrows and Enter control the screen;
-if it has text, typing, Enter and arrows go to the text.
+No modes: if the prompt box is empty, keys control the screen; if it has text,
+typing and Enter go to the text.
 
-Review screen:
+Review screen (the action bar at the bottom is always visible):
 
 | key | action |
 |---|---|
-| `Left` / `Right` | move the highlight across the action bar |
-| `Enter` | activate the highlighted action |
-| `Up` / `Down` | scroll the diff a few lines |
+| `Up` / `Down` | previous / next file |
+| `Left` / `Right` | move across the action bar: Back · Is it slow? · Is it messy? · Is it safe? · Next |
+| `Enter` | run the highlighted action |
+| `Space` | mark the file reviewed |
+| `h` | highlight mode: `↑↓` moves the line cursor, `Enter` selects a line or range, `Esc` leaves |
 | `PgUp` / `PgDn` | scroll the answer pane (when open) or the diff |
 | `Esc` | open the menu (or close it) |
-| `Tab` | cycle review → tree → log (not advertised) |
 | `Ctrl+C` | quit |
 
 Home screen / recent projects (the start screen when you launch outside a git repo,

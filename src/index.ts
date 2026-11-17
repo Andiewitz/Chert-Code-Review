@@ -5,16 +5,18 @@ const VERSION = "0.4.0";
 function printHelp(): void {
   console.log(`chert v${VERSION}
 
-Usage: chert [path] [command] [options]
+Review the local changes in a git repository — no network needed.
+
+Usage: chert [path]
+
+  path            a project folder or any subfolder of it (default: the current folder)
 
 Commands:
-  (default)       Open the review TUI (optionally in [path])
-  tui [path]      Open the review TUI (optionally in [path])
-  greet [name]    Say hello (example command, replace me)
+  (default)       open the review TUI
+  tui [path]      same thing, spelled out
 
-Options:
-  -h, --help      Show this help message
-  -v, --version   Show version`);
+Keys inside the TUI: ↑↓ files · ←→ action · Enter run · Space reviewed ·
+  h highlight · Esc menu · Ctrl+C quit. Type / for commands.`);
 }
 
 async function launchTui(startDir?: string): Promise<void> {
@@ -33,7 +35,6 @@ async function launchTui(startDir?: string): Promise<void> {
 function isFlagOrKnownCommand(arg: string): boolean {
   return (
     arg === "tui" ||
-    arg === "greet" ||
     arg === "-h" ||
     arg === "--help" ||
     arg === "-v" ||
@@ -61,11 +62,6 @@ switch (command) {
   case "-v":
   case "--version": {
     console.log(VERSION);
-    break;
-  }
-  case "greet": {
-    const name = rest[0] ?? "world";
-    console.log(`Hello, ${name}!`);
     break;
   }
   default: {

@@ -540,8 +540,8 @@ async function phaseETests(): Promise<void> {
     const setup = await render(ReviewApp, { width: 100, height: 30 });
     try {
       await setup.renderOnce();
-      // focus code pane
-      await setup.mockInput.pressArrow("right");
+      // highlight mode
+      await setup.mockInput.pressKey("h");
       await setup.renderOnce();
       // move cursor past meta/hunk rows to first code line
       for (let i = 0; i < 5; i++) { await setup.mockInput.pressArrow("down"); }
@@ -634,8 +634,10 @@ async function phaseFTests(): Promise<void> {
     const setup = await render(ReviewApp, { width: 100, height: 30 });
     try {
       await setup.renderOnce();
-      // press "Is it slow?" button: focus ask row via Tab, then Left to first, Enter
-      await setup.mockInput.pressKey("TAB");
+      // action bar starts on Next; Left ×3 reaches "Is it slow?", Enter runs it
+      await setup.mockInput.pressArrow("left");
+      await setup.mockInput.pressArrow("left");
+      await setup.mockInput.pressArrow("left");
       await setup.renderOnce();
       await setup.mockInput.pressKey("RETURN");
       await setup.renderOnce();
@@ -644,11 +646,10 @@ async function phaseFTests(): Promise<void> {
       let frame = setup.captureCharFrame();
       assert(frame.includes("answer line 1"), "phaseF answer shows in pane");
       assert(frame.includes("\u258C"), "phaseF AI highlight shows");
-      // Dismiss: move cursor to highlighted line, Enter opens menu, select Dismiss (index 2), Enter
-      await setup.mockInput.pressArrow("right");
+      // Dismiss: highlight mode, move onto the highlighted line, Enter opens the menu
+      await setup.mockInput.pressKey("h");
       await setup.renderOnce();
-      // move cursor to the highlighted line (line 1 -> row index 5 or so); skip meta
-      for (let i = 0; i < 5; i++) await setup.mockInput.pressArrow("down");
+      await setup.mockInput.pressArrow("down");
       await setup.renderOnce();
       await setup.mockInput.pressKey("RETURN");
       await setup.renderOnce();
@@ -662,8 +663,9 @@ async function phaseFTests(): Promise<void> {
       assert(!frame.includes("ai note") || true, "phaseF dismiss handled");
       // busy guard: ask again while... not busy now. Skip.
 
-      // Space toggles reviewed on first file
-      await setup.mockInput.pressArrow("left");
+      // Space toggles reviewed on first file (leave highlight mode first)
+      await setup.mockInput.pressEscape();
+      await new Promise((r) => setTimeout(r, 60));
       await setup.renderOnce();
       await setup.mockInput.pressKey(" ");
       await setup.renderOnce();

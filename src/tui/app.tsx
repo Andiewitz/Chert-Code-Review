@@ -208,9 +208,13 @@ function buildHelpText(): string {
   const pad = Math.max(...COMMAND_DEFS.map((c) => c.usage.length)) + 2
   return [
     "keys:",
-    "  Left/Right choose an action · Enter does it",
-    "  Up/Down scroll the diff · PgUp/PgDn scroll the answer (when open)",
-    "  Esc menu · Ctrl+C quit",
+    "  Up/Down     previous / next file",
+    "  Left/Right  pick an action: Back · slow · messy · safe · Next",
+    "  Enter       run the picked action",
+    "  Space       mark the file reviewed",
+    "  h           highlight lines (↑↓ move, Enter select, Esc done)",
+    "  PgUp/PgDn   scroll the diff, or the answer when it is open",
+    "  Esc         menu · Ctrl+C quit",
     "  type a question and press Enter to ask",
     "",
     "commands:",
@@ -348,8 +352,6 @@ export function ReviewApp() {
   const [answerIsError, setAnswerIsError] = createSignal(false)
   const [focus, setFocus] = createSignal<"files" | "code">("files")
   const [codeCursor, setCodeCursor] = createSignal(0)
-  const [askFocus, setAskFocus] = createSignal(false)
-  const [askIndex, setAskIndex] = createSignal(0)
   const [reviewed, setReviewed] = createSignal(new Set<string>())
   const [highlights, setHighlights] = createSignal<Highlight[]>([])
   const [resolvedHighlights, setResolvedHighlights] = createSignal(new Map<string, { startRow: number; endRow: number; moved: boolean } | null>())
@@ -671,17 +673,7 @@ export function ReviewApp() {
     const i = Math.max(0, q.indexOf(cur))
     const total = q.length === 0 ? (files()?.length ?? 0) : q.length
     const pos = total === 0 ? 0 : i + 1
-    const barLen = 20
-    const filled = total === 0 ? 0 : Math.round((pos / total) * barLen)
-    const bar = "█".repeat(filled) + "░".repeat(barLen - filled)
-    const f = file()
-    const statusWord = f ? STATUS_GLYPH[f.status] : ""
-    // map glyph to plain word
-    const plain = f ? (f.status === "added" || f.status === "untracked" ? "new" : f.status === "deleted" ? "deleted" : "changed") : ""
-    const adds = f ? `+${f.additions}` : ""
-    const dels = f ? `-${f.deletions}` : ""
-    const path = shortenPath(cur, 40)
-    return `File ${pos} of ${total}  [${bar}]  ${path}   ${plain}  ${adds} ${dels}`.trim()
+    return `${pos} of ${total} files · ${reviewedCount()} reviewed`
   }
 
   if (initialRoot) {
@@ -1432,7 +1424,7 @@ export function ReviewApp() {
       if (highlightNoteMode()) { setHighlightNoteMode(false); setPendingHighlight(null); clearInput(); setStatus(""); return }
       if (rangeStart() !== null) { setRangeStart(null); setStatus(""); return }
       if (hasText) { clearInput(); return }
-      if (askFocus()) { setAskFocus(false); setFocus("files"); return }
+      if (view() === "review" && focus() === "code") { setFocus("files"); setStatus(""); return }
       if (view() === "review") { setMenuOpen(true); return }
       return
     }
@@ -1463,11 +1455,6 @@ export function ReviewApp() {
       if (list.length > 0) {
         key.preventDefault()
         setSuggestionIndex((i) => (i + 1) % list.length)
-        return
-      }
-      if (!hasText && view() === "review") {
-        key.preventDefault()
-        setAskFocus((v) => !v)
         return
       }
       return
@@ -1504,18 +1491,8 @@ export function ReviewApp() {
         return
       }
       if (view() === "review") {
-        if (askFocus()) {
-          const cur = file()?.path
-          if (cur === undefined) return
-          const lens = askIndex() === 0 ? "slow" : askIndex() === 1 ? "messy" : "safe"
-          const q = lens === "slow" ? QUESTIONS.slow(cur) : lens === "messy" ? QUESTIONS.messy(cur) : QUESTIONS.safe(cur)
-          setAskFocus(false)
-          markAsked(cur)
-          void askAgent(q)
-          return
-        }
         if (focus() === "files") {
-          setFocus("code")
+          activateAction(action())
           return
         }
         // code focus: Enter
@@ -1618,36 +1595,52 @@ export function ReviewApp() {
           setProjectsIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, count - 1))))
           return
         }
+        if (key.name === "delete") {
+          key.preventDefault()
+          const item = loadRecent()[projectsIndex()]
+          if (item) {
+            forgetProject(item.path)
+            setProjectsIndex((i) => Math.max(0, Math.min(i, Math.max(0, loadRecent().length - 1))))
+            setStatus(`forgot ${basename(item.path)}`)
+          }
+          return
+        }
         return
       }
       if (view() === "review") {
-        if (askFocus()) {
-          if (key.name === "left" || key.name === "right") {
-            key.preventDefault()
-            const dir = key.name === "left" ? -1 : 1
-            setAskIndex((i) => Math.max(0, Math.min(i + dir, 2)))
-            return
+        if (key.name === "left" || key.name === "right") {
+          key.preventDefault()
+          const dir = key.name === "left" ? -1 : 1
+          setAction((i) => Math.max(0, Math.min(i + dir, ACTION_ITEMS.length - 1)))
+          return
+        }
+        if (key.name === "h") {
+          key.preventDefault()
+          const entering = focus() !== "code"
+          setFocus(entering ? "code" : "files")
+          setRangeStart(null)
+          setStatus("")
+          if (entering) {
+            const first = codeRows().findIndex((r) => r.kind !== "meta")
+            const row = first === -1 ? 0 : first
+            setCodeCursor(row)
+            try { codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, row - 3) }) } catch { /* ignore */ }
           }
           return
         }
-        if (key.name === "left" || key.name === "right") {
+        if (key.name === " " || key.name === "space") {
           key.preventDefault()
-          setFocus((f) => (f === "files" ? "code" : f === "code" ? "files" : f))
+          const f = file()
+          if (f) {
+            const keyStr = `${f.path}\u0000${Bun.hash(patch())}`
+            const next = new Set(reviewed())
+            if (next.has(keyStr)) next.delete(keyStr)
+            else next.add(keyStr)
+            setReviewed(next)
+          }
           return
         }
         if (focus() === "files") {
-          if (key.name === " " || key.name === "space") {
-            key.preventDefault()
-            const f = file()
-            if (f) {
-              const keyStr = `${f.path}\u0000${Bun.hash(patch())}`
-              const next = new Set(reviewed())
-              if (next.has(keyStr)) next.delete(keyStr)
-              else next.add(keyStr)
-              setReviewed(next)
-            }
-            return
-          }
           if (key.name === "up" || key.name === "down") {
             key.preventDefault()
             navigate(key.name === "up" ? -1 : 1)
@@ -1705,6 +1698,16 @@ export function ReviewApp() {
             const next = Math.max(0, Math.min(i + dir, Math.max(0, recents.length - 1)))
             return next
           })
+          return
+        }
+        if (key.name === "delete") {
+          key.preventDefault()
+          const item = loadRecent()[projectsIndex()]
+          if (item) {
+            forgetProject(item.path)
+            setProjectsIndex((i) => Math.max(0, Math.min(i, Math.max(0, loadRecent().length - 1))))
+            setStatus(`forgot ${basename(item.path)}`)
+          }
           return
         }
         return
@@ -1887,8 +1890,9 @@ export function ReviewApp() {
     if (menuOpen()) return "↑↓ choose · Enter go · Esc close · Ctrl+C quit"
     if (allFilesOpen()) return "↑↓ choose · Enter jump · Esc close · Ctrl+C quit"
     if (!hasProject()) return "↑↓ choose · Enter open · /cd <path> · Esc menu · Ctrl+C quit"
-    if (answerOpen() && answerFile() === (file()?.path ?? "")) return "↑↓ scroll · ←→ pane · Enter highlight · Tab ask · Esc menu"
-    return "↑↓ files · ←→ pane · Enter highlight · Tab ask · Esc menu · Ctrl+C quit"
+    if (focus() === "code") return "↑↓ line · Enter select · Esc done · Ctrl+C quit"
+    if (answerOpen() && answerFile() === (file()?.path ?? "")) return "↑↓ file · ←→ action · Enter run · PgUp/PgDn answer · Esc menu"
+    return "↑↓ file · ←→ action · Enter run · Space reviewed · h highlight · Esc menu"
   }
 
   // Keep the log pinned to the bottom as entries arrive.
@@ -1931,7 +1935,7 @@ export function ReviewApp() {
     if (!hasProject()) return "no project selected"
     const project = cwdBase()
     const count = files() === null ? "loading…" : loadError() ? "error" : `${files()!.length} files`
-    return `${project} · ${branch()} · ${sourceLabel()}`
+    return `${project} · ${branch()}`
   })
 
   const filetype = createMemo(() => {
@@ -1953,6 +1957,7 @@ export function ReviewApp() {
     if (h.level === "medium") return "#e0af68"
     return COLORS.dim
   }
+
 
   function highlightForRowIndex(idx: number): Highlight | undefined {
     const resolved = resolvedHighlights()
@@ -2009,6 +2014,14 @@ export function ReviewApp() {
         <text fg={COLORS.dim}>{` · ${headerInfo()}`}</text>
         <box flexGrow={1} />
         <text fg={COLORS.dim} attributes={ATTR.dim}>{`[ ${activeLabel()} ]`}</text>
+      </box>
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+        <text fg={COLORS.dim} attributes={ATTR.dim}>{hasProject() && view() === "review" ? sourceLabel() : " "}</text>
+        <box flexGrow={1} />
+        <text fg={COLORS.purpleBright} attributes={ATTR.dim}>
+          {hasProject() && view() === "review" ? stepHeader() : " "}
+        </text>
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
 
@@ -2077,11 +2090,14 @@ export function ReviewApp() {
                           const num = row.kind === "del" ? (row.oldNo ?? "") : (row.newNo ?? "")
                           const h = () => highlightForRowIndex(i())
                           return (
-                            <box flexDirection="row" backgroundColor={isCursor() ? COLORS.selectedBg : COLORS.bg}>
-                              <text fg={COLORS.dim}>{isCursor() ? ">" : " "}</text>
+                            <box flexDirection="row" backgroundColor={isCursor() ? COLORS.selectedBg : (row.kind === "add" ? "#1a2420" : row.kind === "del" ? "#2a1a1f" : COLORS.bg)}>
+                              <text fg={COLORS.purple}>{isCursor() && focus() === "code" ? ">" : " "}</text>
                               <text fg={h() ? highlightColor(h()!) : COLORS.dim}>{h() ? "\u258C" : " "}</text>
                               <text fg={COLORS.dim}>{String(num).padStart(4)} </text>
-                              <text fg={row.kind === "add" ? COLORS.add : row.kind === "del" ? COLORS.danger : COLORS.text}>{`${gutter} ${row.text}`}</text>
+                              <text
+                                fg={row.kind === "add" ? COLORS.add : row.kind === "del" ? COLORS.danger : row.kind === "hunk" ? COLORS.purple : row.kind === "meta" ? COLORS.dim : COLORS.text}
+                                attributes={row.kind === "meta" ? ATTR.dim : ATTR.none}
+                              >{`${gutter} ${row.text}`}</text>
                             </box>
                           )
                         }}
@@ -2237,14 +2253,20 @@ export function ReviewApp() {
         </box>
       </Show>
       <Show when={hasProject() && view() === "review" && !menuOpen() && !allFilesOpen() && !projectsOpen()}>
-        <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
-          <text fg={COLORS.purple} attributes={ATTR.bold}>{"Ask"}</text>
-          <text fg={COLORS.dim} attributes={ATTR.dim}>{" about this file:  "}</text>
-          <For each={["Is it slow?", "Is it messy?", "Is it safe?"]}>
+        <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+          <For each={ACTION_ITEMS}>
             {(label, i) => (
-              <text fg={askFocus() && askIndex() === i() ? COLORS.bg : COLORS.text}>{askFocus() && askIndex() === i() ? `\u2588[${label}]\u2588` : `[ ${label} ]  `}</text>
+              <text
+                fg={i() === action() ? COLORS.bg : COLORS.dim}
+                bg={i() === action() ? COLORS.purple : undefined}
+                attributes={i() === action() ? ATTR.bold : ATTR.none}
+              >{` ${label} `}</text>
             )}
           </For>
+          <box flexGrow={1} />
+          <Show when={focus() === "code"}>
+            <text fg={COLORS.purple} attributes={ATTR.dim}>{"highlight mode · Esc to leave"}</text>
+          </Show>
         </box>
       </Show>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
