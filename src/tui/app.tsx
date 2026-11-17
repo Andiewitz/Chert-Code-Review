@@ -35,7 +35,7 @@ import {
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
-import { loadHighlights, saveHighlights, resolveHighlights } from "../highlights"
+import { loadHighlights, parseAgentHighlights, saveHighlights, resolveHighlights } from "../highlights"
 import type { Highlight, HighlightLevel } from "../highlights"
 
 // ---------------------------------------------------------------------------
@@ -236,8 +236,11 @@ export function ReviewApp() {
   const [lastAnswer, setLastAnswer] = createSignal("")
   const [answerFile, setAnswerFile] = createSignal("")
   const [answerIsError, setAnswerIsError] = createSignal(false)
-  const [focus, setFocus] = createSignal<"files" | "code" | "prompt">("files")
+  const [focus, setFocus] = createSignal<"files" | "code">("files")
   const [codeCursor, setCodeCursor] = createSignal(0)
+  const [askFocus, setAskFocus] = createSignal(false)
+  const [askIndex, setAskIndex] = createSignal(0)
+  const [reviewed, setReviewed] = createSignal(new Set<string>())
   const [highlights, setHighlights] = createSignal<Highlight[]>([])
   const [resolvedHighlights, setResolvedHighlights] = createSignal(new Map<string, { startRow: number; endRow: number; moved: boolean } | null>())
   const [rangeStart, setRangeStart] = createSignal<number | null>(null)
@@ -380,10 +383,29 @@ export function ReviewApp() {
     patchCache.clear()
     patchFor = ""
     setSelected(0)
+    // before overwriting, compute reviewed files that changed
+    let unChecked = 0
+    try {
+      const oldSet = reviewed()
+      const newFiles = listChangedFiles(reviewSource())
+      for (const k of oldSet) {
+        const [path, oldHash] = k.split("\u0000")
+        const f = newFiles.find((x) => x.path === path)
+        if (f) {
+          // compute new hash from patch (load patch)
+          try {
+            const p = loadPatch(f, reviewSource())
+            const newHash = String(Bun.hash(p))
+            if (newHash !== oldHash) unChecked++
+          } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
     setQueue([])
     setFileMemory(new Map())
     setAction(4)
     setMenuOpen(false)
+    if (unChecked > 0) setStatus(`${unChecked} reviewed files changed and were un-checked`)
     setAllFilesOpen(false)
     setAnswerOpen(false)
     setAnswerFile("")
@@ -578,8 +600,10 @@ export function ReviewApp() {
     { name: "Chat history", description: "past questions and answers", value: 1 },
     { name: "Refresh changes", description: "re-scan the working tree", value: 2 },
     { name: "Review something else", description: "switch review source", value: 3 },
-    { name: "Help", description: "what the keys do", value: 4 },
-    { name: "Quit", description: "exit chert", value: 5 },
+    { name: "Review summary", description: "counts of reviewed and asked files", value: 4 },
+    { name: "Next unreviewed file", description: "jump to the next file not marked reviewed", value: 5 },
+    { name: "Help", description: "what the keys do", value: 6 },
+    { name: "Quit", description: "exit chert", value: 7 },
   ])
 
   const allFilesOptions = createMemo<SelectOption[]>(() => {
@@ -691,8 +715,16 @@ export function ReviewApp() {
         statusPrefix = "Thinking… "
         setStatus("Thinking… 0s")
         const result = await runAgent(prompt, cwd())
-        addEntry("agent", result)
-        setLastAnswer(result)
+        const parsed = parseAgentHighlights(result, (files() ?? []).map((f) => f.path), new Map((files() ?? []).map((f) => [f.path, codeRows()] as [string, any])), highlights())
+        if (parsed.highlights.length > 0) {
+          const next = [...highlights(), ...parsed.highlights]
+          setHighlights(next)
+          try { saveHighlights(next) } catch { /* ignore */ }
+          const skipMsg = parsed.skipped.length > 0 ? ` (${parsed.skipped.length} skipped: ${parsed.skipped[0]})` : ""
+          setStatus(`AI added ${parsed.highlights.length} highlights${skipMsg}`)
+        }
+        addEntry("agent", parsed.cleanText)
+        setLastAnswer(parsed.cleanText)
         return
       }
       const provider = findProvider(active)
@@ -716,8 +748,16 @@ export function ReviewApp() {
       setStatus(`${statusPrefix}0s`)
       const system = `You are chert's code-review assistant. Current project directory: ${cwd()}. Locally changed files: ${(files() ?? []).map((f) => f.path).join(", ") || "none"}.`
       const result = await chatCompletion(provider, key, useModel, system, prompt)
-      addEntry("agent", result)
-      setLastAnswer(result)
+      const parsed = parseAgentHighlights(result, (files() ?? []).map((f) => f.path), new Map((files() ?? []).map((f) => [f.path, codeRows()] as [string, any])), highlights())
+      if (parsed.highlights.length > 0) {
+        const next = [...highlights(), ...parsed.highlights]
+        setHighlights(next)
+        try { saveHighlights(next) } catch { /* ignore */ }
+        const skipMsg = parsed.skipped.length > 0 ? ` (${parsed.skipped.length} skipped: ${parsed.skipped[0]})` : ""
+        setStatus(`AI added ${parsed.highlights.length} highlights${skipMsg}`)
+      }
+      addEntry("agent", parsed.cleanText)
+      setLastAnswer(parsed.cleanText)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       addEntry("error", msg)
@@ -1207,7 +1247,7 @@ export function ReviewApp() {
       if (key.name === "up" || key.name === "down") {
         key.preventDefault()
         const dir = key.name === "up" ? -1 : 1
-        setHighlightMenuIndex((i) => Math.max(0, Math.min(i + dir, 2)))
+        setHighlightMenuIndex((i) => Math.max(0, Math.min(i + dir, 3)))
         return
       }
       if (key.name === "return" || key.name === "enter") {
@@ -1217,15 +1257,15 @@ export function ReviewApp() {
         const h = highlightForRowIndex(cur)
         if (!h) { setHighlightMenuOpen(false); return }
         if (idx === 0) {
-          const next = highlights().filter((x) => x.id !== h.id)
-          setHighlights(next)
-          try { saveHighlights(next) } catch { /* ignore */ }
-          setResolvedHighlights(new Map(resolvedHighlights()))
+          // Ask the AI about these lines
           setHighlightMenuOpen(false)
-          setStatus("removed highlight")
+          const q = `Look at lines ${h.start}-${h.end} in ${h.path}. ${h.note ? h.note + " " : ""}The lines are:\n${h.text.map((t) => `  ${t}`).join("\n")}\nExplain in plain words, with the exact lines.`
+          markAsked(h.path)
+          void askAgent(q)
           return
         }
         if (idx === 1) {
+          // Edit note
           setHighlightMenuOpen(false)
           setHighlightNoteMode(true)
           setHighlightNoteText(h.note)
@@ -1234,6 +1274,17 @@ export function ReviewApp() {
           setStatus("edit note (Enter saves, Esc cancels)")
           return
         }
+        if (idx === 2) {
+          // Dismiss (AI) or Remove (mine)
+          const next = highlights().filter((x) => x.id !== h.id)
+          setHighlights(next)
+          try { saveHighlights(next) } catch { /* ignore */ }
+          setResolvedHighlights(new Map(resolvedHighlights()))
+          setHighlightMenuOpen(false)
+          setStatus(h.by === "ai" ? "dismissed AI highlight" : "removed highlight")
+          return
+        }
+        // Close
         setHighlightMenuOpen(false)
         return
       }
@@ -1253,6 +1304,7 @@ export function ReviewApp() {
       if (highlightNoteMode()) { setHighlightNoteMode(false); setPendingHighlight(null); clearInput(); setStatus(""); return }
       if (rangeStart() !== null) { setRangeStart(null); setStatus(""); return }
       if (hasText) { clearInput(); return }
+      if (askFocus()) { setAskFocus(false); setFocus("files"); return }
       if (view() === "review") { setMenuOpen(true); return }
       return
     }
@@ -1279,6 +1331,11 @@ export function ReviewApp() {
         setPromptValue(`/cd ${completed} `)
         return
       }
+      if (!hasText && view() === "review") {
+        key.preventDefault()
+        setAskFocus((v) => !v)
+        return
+      }
       return
     }
 
@@ -1301,6 +1358,16 @@ export function ReviewApp() {
         return
       }
       if (view() === "review") {
+        if (askFocus()) {
+          const cur = file()?.path
+          if (cur === undefined) return
+          const lens = askIndex() === 0 ? "slow" : askIndex() === 1 ? "messy" : "safe"
+          const q = lens === "slow" ? QUESTIONS.slow(cur) : lens === "messy" ? QUESTIONS.messy(cur) : QUESTIONS.safe(cur)
+          setAskFocus(false)
+          markAsked(cur)
+          void askAgent(q)
+          return
+        }
         if (focus() === "files") {
           setFocus("code")
           return
@@ -1389,12 +1456,33 @@ export function ReviewApp() {
     // Empty box: screen keys
     if (!hasText) {
       if (view() === "review") {
+        if (askFocus()) {
+          if (key.name === "left" || key.name === "right") {
+            key.preventDefault()
+            const dir = key.name === "left" ? -1 : 1
+            setAskIndex((i) => Math.max(0, Math.min(i + dir, 2)))
+            return
+          }
+          return
+        }
         if (key.name === "left" || key.name === "right") {
           key.preventDefault()
           setFocus((f) => (f === "files" ? "code" : f === "code" ? "files" : f))
           return
         }
         if (focus() === "files") {
+          if (key.name === " " || key.name === "space") {
+            key.preventDefault()
+            const f = file()
+            if (f) {
+              const keyStr = `${f.path}\u0000${Bun.hash(patch())}`
+              const next = new Set(reviewed())
+              if (next.has(keyStr)) next.delete(keyStr)
+              else next.add(keyStr)
+              setReviewed(next)
+            }
+            return
+          }
           if (key.name === "up" || key.name === "down") {
             key.preventDefault()
             navigate(key.name === "up" ? -1 : 1)
@@ -1481,12 +1569,30 @@ export function ReviewApp() {
         addEntry("system", "Type /review working · /review staged · /review branch [name] · /review last · /review commit <ref>")
         setView("log")
         return
-      case 4: // Help
+      case 4: // Review summary
+        setMenuOpen(false)
+        const asked = (files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length
+        const hlYours = highlights().filter((h) => h.by === "you").length
+        const hlAi = highlights().filter((h) => h.by === "ai").length
+        addEntry("system", `Reviewed ${reviewedCount()} of ${files()?.length ?? 0} files. Asked about ${asked}. Highlights: ${hlYours} yours, ${hlAi} from the AI.`)
+        setView("log")
+        return
+      case 5: // Next unreviewed file
+        setMenuOpen(false)
+        {
+          const unrev = (files() ?? []).find((f) => !reviewed().has(`${f.path}\u0000${Bun.hash(patchCache.get(f.path) ?? "")}`))
+          if (unrev) {
+            selectFile((files() ?? []).indexOf(unrev))
+            setFocus("files")
+          }
+        }
+        return
+      case 6: // Help
         addEntry("system", HELP_TEXT)
         setView("log")
         setMenuOpen(false)
         return
-      case 5: // Quit
+      case 7: // Quit
         renderer.destroy()
         process.exit(0)
         return
@@ -1616,11 +1722,15 @@ export function ReviewApp() {
   })
 
   const options = createMemo<SelectOption[]>(() =>
-    (files() ?? []).map((f, index) => ({
-      name: `${STATUS_GLYPH[f.status]} ${shortenPath(f.path, 22)}`,
-      description: `+${f.additions} -${f.deletions}`,
-      value: index,
-    })),
+    (files() ?? []).map((f, index) => {
+      const isRev = reviewed().has(`${f.path}\u0000${Bun.hash(patchCache.get(f.path) ?? "")}`)
+      const badge = isRev ? "✓ " : "  "
+      return {
+        name: `${badge}${STATUS_GLYPH[f.status]} ${shortenPath(f.path, 20)}`,
+        description: `+${f.additions} -${f.deletions}`,
+        value: index,
+      }
+    }),
   )
 
   const headerInfo = createMemo(() => {
@@ -1668,6 +1778,21 @@ export function ReviewApp() {
     const who = h.by === "you" ? "you" : `AI ${h.level}`
     const note = h.note.trim() === "" ? "(no note)" : h.note
     return `${who} \u00b7 ${note}`
+  })
+
+  function reviewedKeyFor(f: ReviewFile | undefined): string {
+    if (!f) return ""
+    const p = patchCache.get(f.path) ?? ""
+    return `${f.path}\u0000${Bun.hash(p)}`
+  }
+
+  const reviewedCount = createMemo(() => {
+    const set = reviewed()
+    let n = 0
+    for (const f of files() ?? []) {
+      if (set.has(`${f.path}\u0000${Bun.hash(patchCache.get(f.path) ?? "")}`)) n++
+    }
+    return n
   })
 
   const suggestionWindow = createMemo(() => {
@@ -1875,9 +2000,10 @@ export function ReviewApp() {
         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
           <text fg={COLORS.bright}>Highlight</text>
           <box height={1} />
-          <text fg={highlightMenuIndex() === 0 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 0 ? "▸ " : "  "}Remove`}</text>
+          <text fg={highlightMenuIndex() === 0 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 0 ? "▸ " : "  "}Ask the AI about these lines`}</text>
           <text fg={highlightMenuIndex() === 1 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 1 ? "▸ " : "  "}Edit note`}</text>
-          <text fg={highlightMenuIndex() === 2 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 2 ? "▸ " : "  "}Close`}</text>
+          <text fg={highlightMenuIndex() === 2 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 2 ? "▸ " : "  "}${highlightForRowIndex(codeCursorRow())?.by === "ai" ? "Dismiss" : "Remove"}`}</text>
+          <text fg={highlightMenuIndex() === 3 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 3 ? "▸ " : "  "}Close`}</text>
         </box>
       </Show>
 
@@ -1916,6 +2042,14 @@ export function ReviewApp() {
       </Show>
       <box height={1} flexShrink={0} paddingLeft={1}>
         <text fg={COLORS.dim}>{noteStrip()}</text>
+      </box>
+      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1}>
+        <text fg={COLORS.dim}>Ask about this file:  </text>
+        <For each={["Is it slow?", "Is it messy?", "Is it safe?"]}>
+          {(label, i) => (
+            <text fg={askFocus() && askIndex() === i() ? COLORS.bg : COLORS.text}>{askFocus() && askIndex() === i() ? `\u2588[${label}]\u2588` : `[ ${label} ]  `}</text>
+          )}
+        </For>
       </box>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={COLORS.bright}>{"> "}</text>
