@@ -345,6 +345,8 @@ export function ReviewApp() {
   const [allFilesOpen, setAllFilesOpen] = createSignal(false)
   const [menuIndex, setMenuIndex] = createSignal(0)
   const [allFilesIndex, setAllFilesIndex] = createSignal(0)
+  const [reviewPickerOpen, setReviewPickerOpen] = createSignal(false)
+  const [reviewPickerIndex, setReviewPickerIndex] = createSignal(0)
   const [projectsOpen, setProjectsOpen] = createSignal(false)
   const [projectsIndex, setProjectsIndex] = createSignal(0)
   const [doneIndex, setDoneIndex] = createSignal(0)
@@ -425,7 +427,7 @@ export function ReviewApp() {
   })
 
   // Panels that replace the review: menu, all-files list, recent projects.
-  const mainVisible = createMemo(() => !menuOpen() && !allFilesOpen() && !projectsOpen())
+  const mainVisible = createMemo(() => !menuOpen() && !allFilesOpen() && !projectsOpen() && !reviewPickerOpen())
 
   function cwdBase(): string {
     const parts = cwd().split(/[\\/]/)
@@ -482,11 +484,7 @@ export function ReviewApp() {
     return v.slice("/review".length).trimStart()
   })
 
-  const reviewSuggestions = createMemo(() => {
-    const q = reviewInput()
-    if (q === null) return [] as Suggestion[]
-    const needle = q.toLowerCase()
-    const matches = (text: string) => needle === "" || text.toLowerCase().includes(needle)
+  const allReviewTargets = createMemo(() => {
     const items: Suggestion[] = []
     const targets: { key: string; description: string; insert: string }[] = [
       { key: "working", description: "uncommitted changes", insert: "/review working" },
@@ -495,19 +493,23 @@ export function ReviewApp() {
       { key: "branch", description: "everything on this branch since base", insert: "/review branch " },
     ]
     for (const t of targets) {
-      if (matches(t.key) || matches(t.description) || matches(t.insert)) {
-        items.push({ key: t.key, label: `/review ${t.key}`, description: t.description, insert: t.insert })
-      }
+      items.push({ key: t.key, label: `/review ${t.key}`, description: t.description, insert: t.insert })
     }
     if (hasProject()) {
       for (const c of listRecentCommits()) {
         const short = c.sha.slice(0, 7)
-        if (matches(short) || matches(c.subject) || matches(c.sha)) {
-          items.push({ key: c.sha, label: short, description: c.subject, insert: `/review commit ${c.sha}` })
-        }
+        items.push({ key: c.sha, label: short, description: c.subject, insert: `/review commit ${c.sha}` })
       }
     }
     return items
+  })
+
+  const reviewSuggestions = createMemo(() => {
+    const q = reviewInput()
+    if (q === null) return [] as Suggestion[]
+    const needle = q.toLowerCase()
+    const matches = (text: string) => needle === "" || text.toLowerCase().includes(needle)
+    return allReviewTargets().filter((s) => matches(s.label) || matches(s.description) || matches(s.key))
   })
 
   const filteredCommands = createMemo(() => {
@@ -521,7 +523,6 @@ export function ReviewApp() {
 
   const visibleSuggestions = createMemo(() => {
     if (pickerOpen()) return COMMAND_DEFS.map(commandToSuggestion)
-    if (reviewInput() !== null) return reviewSuggestions()
     return filteredCommands()
   })
 
@@ -1108,16 +1109,8 @@ export function ReviewApp() {
         const tokens = rest.split(/\s+/).filter(Boolean)
         const sub = (tokens[0] ?? "").toLowerCase()
         if (sub === "") {
-          const src = reviewSource()
-          let label = ""
-          switch (src.kind) {
-            case "working": label = "uncommitted changes"; break
-            case "staged": label = "staged changes"; break
-            case "branch": label = `everything on this branch since ${src.base}`; break
-            case "commit": label = `commit ${src.sha.slice(0, 7)}: ${src.subject}`; break
-          }
-          addEntry("system", `reviewing: ${label}\n/review working · /review staged · /review branch [name] · /review last · /review commit <ref>`)
-          setView("log")
+          setReviewPickerOpen(true)
+          setReviewPickerIndex(0)
           return
         }
         if (sub === "working") {
@@ -1402,7 +1395,34 @@ export function ReviewApp() {
   // Keyboard handling: no modes. Box empty => screen keys. Box has text => editing.
   useKeyboard((key) => {
     const hasText = (inputRef?.value ?? "") !== ""
-    const showList = pickerOpen() || (commandQuery() !== null && filteredCommands().length > 0) || (reviewInput() !== null && reviewSuggestions().length > 0)
+    const showList = pickerOpen() || (commandQuery() !== null && filteredCommands().length > 0)
+
+    // Review source picker (opened by /review)
+    if (reviewPickerOpen()) {
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault()
+        const items = allReviewTargets()
+        const dir = key.name === "up" ? -1 : 1
+        setReviewPickerIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, items.length - 1))))
+        return
+      }
+      if (key.name === "return" || key.name === "enter") {
+        key.preventDefault()
+        const items = allReviewTargets()
+        const item = items[reviewPickerIndex()]
+        if (item) {
+          setReviewPickerOpen(false)
+          runCommand(item.insert.slice(1))
+        }
+        return
+      }
+      if (key.name === "escape") {
+        key.preventDefault()
+        setReviewPickerOpen(false)
+        return
+      }
+      return
+    }
 
     // Ctrl+P command picker
     if (key.ctrl && key.name === "p") {
@@ -1472,6 +1492,7 @@ export function ReviewApp() {
       if (menuOpen()) { setMenuOpen(false); setAllFilesOpen(false); return }
       if (projectsOpen()) { setProjectsOpen(false); return }
       if (allFilesOpen()) { setAllFilesOpen(false); return }
+      if (reviewPickerOpen()) { setReviewPickerOpen(false); return }
       if (highlightNoteMode()) { setHighlightNoteMode(false); setPendingHighlight(null); clearInput(); setStatus(""); return }
       if (rangeStart() !== null) { setRangeStart(null); setStatus(""); return }
       if (hasText) { clearInput(); return }
@@ -2245,6 +2266,19 @@ export function ReviewApp() {
           <RowList
             rows={() => allFilesOptions().map((o) => ({ label: o.name, hint: o.description }))}
             index={() => allFilesIndex()}
+          />
+          <box flexGrow={1} />
+        </box>
+      </Show>
+
+      <Show when={reviewPickerOpen()}>
+        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
+          <box height={1} flexShrink={0} />
+          <text fg={COLORS.purple} attributes={ATTR.bold}>{"Review source"}</text>
+          <box height={1} flexShrink={0} />
+          <RowList
+            rows={() => allReviewTargets().map((s) => ({ label: s.label, hint: s.description }))}
+            index={() => reviewPickerIndex()}
           />
           <box flexGrow={1} />
         </box>
