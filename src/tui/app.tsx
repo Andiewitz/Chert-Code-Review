@@ -2,8 +2,8 @@ import { createEffect, createMemo, createSignal, For, Show, onCleanup } from "so
 import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption, SelectRenderable } from "@opentui/core"
-import { basename, dirname, resolve } from "node:path"
-import { commitParent, commitSubject, currentBranch, listChangedFiles, loadPatch, mergeBase, resolveReviewBase, resolveSha, validateRef } from "../git"
+import { basename, dirname, join, resolve } from "node:path"
+import { commitParent, commitSubject, currentBranch, gitDir, listChangedFiles, loadPatch, mergeBase, resolveReviewBase, resolveSha, validateRef } from "../git"
 import type { ReviewSource } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
@@ -35,6 +35,7 @@ import {
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { loadHighlights, parseAgentHighlights, saveHighlights, resolveHighlights } from "../highlights"
 import type { Highlight, HighlightLevel } from "../highlights"
 
@@ -89,6 +90,7 @@ const COMMAND_DEFS: CommandDef[] = [
   { name: "tree", usage: "/tree", description: "show the whole project tree" },
   { name: "log", usage: "/log", description: "show chat history" },
   { name: "highlights", usage: "/highlights [clear [yes]]", description: "list or clear highlights", takesArg: true },
+  { name: "export", usage: "/export", description: "export review notes to markdown" },
   { name: "review", usage: "/review [working|staged|branch [base]|last|commit <ref>]", description: "what to review", takesArg: true },
   { name: "connect", usage: "/connect [provider [key]]", description: "connector status / save a provider key", takesArg: true },
   { name: "disconnect", usage: "/disconnect <provider>", description: "remove a saved provider key", takesArg: true },
@@ -1100,6 +1102,38 @@ export function ReviewApp() {
           return `${h.path}:${h.start}-${h.end}  ${h.by === "you" ? "you" : "AI " + h.level}  ${h.note || "(no note)"}  ${status}`
         })
         addEntry("system", lines.join("\n"))
+        setView("log")
+        return
+      }
+      case "export": {
+        const lines: string[] = []
+        lines.push("# chert review export")
+        lines.push(`Project: ${cwd()}`)
+        lines.push(`Reviewing: ${sourceLabel()}`)
+        lines.push(`Date: ${new Date().toISOString()}`)
+        lines.push("")
+        const byFile = new Map<string, any[]>()
+        for (const h of highlights()) {
+          if (!byFile.has(h.path)) byFile.set(h.path, [])
+          byFile.get(h.path)!.push(h)
+        }
+        for (const [path, hs] of byFile) {
+          lines.push(`## ${path}`)
+          for (const h of hs) {
+            lines.push(`- ${h.by === "you" ? "you" : "AI " + h.level} lines ${h.start}-${h.end}: ${h.note || "(no note)"}`)
+            for (const t of h.text) lines.push(`  > ${t}`)
+          }
+          lines.push("")
+        }
+        const md = lines.join("\n")
+        try {
+          const dir = join(gitDir(), "chert")
+          mkdirSync(dir, { recursive: true })
+          writeFileSync(join(dir, "last-review.md"), md)
+          addEntry("system", `Exported to ${join(dir, "last-review.md")}\n\n${md}`)
+        } catch (error) {
+          addEntry("error", `export failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
         setView("log")
         return
       }
