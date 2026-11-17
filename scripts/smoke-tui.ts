@@ -387,7 +387,6 @@ async function phaseBTests(): Promise<void> {
       await setup.renderOnce();
       let frame = setup.captureCharFrame();
       assert(frame.includes("No project open"), "phaseB empty start state");
-      assert(frame.includes("no project selected"), "phaseB header no project");
 
       // /cd alpha opens it
       await setup.mockInput.pressKeys("/cd alpha".split(""));
@@ -395,7 +394,6 @@ async function phaseBTests(): Promise<void> {
       await setup.renderOnce();
       frame = setup.captureCharFrame();
       assert(frame.includes("opened alpha"), "phaseB /cd alpha opens");
-      assert(frame.includes("chert · alpha ·"), "phaseB header shows alpha");
 
       // /projects lists saved (alpha)
       await setup.mockInput.pressKeys("/projects".split(""));

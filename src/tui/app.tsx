@@ -2173,13 +2173,6 @@ export function ReviewApp() {
     try { diffScrollRef?.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ }
   })
 
-  const headerInfo = createMemo(() => {
-    if (!hasProject()) return "no project selected"
-    const project = cwdBase()
-    const count = files() === null ? "loading…" : loadError() ? "error" : `${files()!.length} files`
-    return `${project} · ${branch()}`
-  })
-
   const filetype = createMemo(() => {
     const path = file()?.path ?? ""
     return path === "" ? "" : extToFiletype(path.includes(".") ? path.slice(path.lastIndexOf(".")) : path)
@@ -2252,17 +2245,10 @@ export function ReviewApp() {
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS().bg}>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={COLORS().purple} attributes={ATTR.bold}>chert</text>
-        <text fg={COLORS().dim}>{` · ${headerInfo()}`}</text>
-        <box flexGrow={1} />
-        <text fg={COLORS().dim} attributes={ATTR.dim}>{`[ ${activeLabel()} ]`}</text>
-      </box>
-      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
-      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={COLORS().dim} attributes={ATTR.dim}>{hasProject() && view() === "review" ? sourceLabel() : " "}</text>
         <box flexGrow={1} />
         <text fg={COLORS().purpleBright} attributes={ATTR.dim}>
-          {hasProject() && view() === "review" ? stepHeader() : " "}
+          {`${hasProject() && view() === "review" ? `${stepHeader()}  ` : ""}[ ${activeLabel()} ]`}
         </text>
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
