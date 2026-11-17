@@ -638,6 +638,38 @@ export function ReviewApp() {
     setPickerOpen(false)
   }
 
+  // Persisted review source per project
+  function reviewSourcesPath(): string {
+    return join(configDir(), "review-sources.json")
+  }
+  function loadSavedReviewSource(root: string): ReviewSource | null {
+    try {
+      const raw = readFileSync(reviewSourcesPath(), "utf8")
+      const parsed = JSON.parse(raw) as Record<string, any>
+      const src = parsed?.[root]
+      if (!src || typeof src.kind !== "string") return null
+      if (src.kind === "commit") {
+        if (typeof src.sha !== "string" || resolveSha(src.sha) === null) return null
+      }
+      return src as ReviewSource
+    } catch {
+      return null
+    }
+  }
+  function saveReviewSource(root: string, src: ReviewSource): void {
+    try {
+      let obj: Record<string, any> = {}
+      try { obj = JSON.parse(readFileSync(reviewSourcesPath(), "utf8")) as Record<string, any> } catch { /* ignore */ }
+      obj[root] = src
+      mkdirSync(configDir(), { recursive: true })
+      writeFileSync(reviewSourcesPath(), `${JSON.stringify(obj, null, 2)}\n`)
+    } catch { /* ignore */ }
+  }
+  function setReviewSourcePersist(src: ReviewSource): void {
+    setReviewSource(src)
+    try { saveReviewSource(cwd(), src) } catch { /* ignore */ }
+  }
+
   // Synchronous loads
   function load(): void {
     setFiles(null)
@@ -829,6 +861,8 @@ export function ReviewApp() {
   }
 
   if (initialRoot) {
+    const saved = loadSavedReviewSource(initialRoot)
+    if (saved) setReviewSource(saved)
     load()
   }
 
@@ -1135,6 +1169,8 @@ export function ReviewApp() {
             return
           }
           if (savedCwd !== null && savedCwd !== root) previousProject = savedCwd
+          const saved = loadSavedReviewSource(root)
+          if (saved) setReviewSource(saved)
           setCwd(root)
           setHasProject(true)
           load()
@@ -1214,13 +1250,13 @@ export function ReviewApp() {
           return
         }
         if (sub === "working") {
-          setReviewSource({ kind: "working" })
+          setReviewSourcePersist({ kind: "working" })
           load()
           setStatus("reviewing: uncommitted changes")
           return
         }
         if (sub === "staged") {
-          setReviewSource({ kind: "staged" })
+          setReviewSourcePersist({ kind: "staged" })
           load()
           setStatus("reviewing: staged changes")
           return
@@ -1234,7 +1270,7 @@ export function ReviewApp() {
           }
           const parent = commitParent(sha)
           const subject = commitSubject(sha)
-          setReviewSource({ kind: "commit", sha, parent, subject })
+          setReviewSourcePersist({ kind: "commit", sha, parent, subject })
           load()
           setStatus(`reviewing: commit ${sha.slice(0, 7)}`)
           return
@@ -1254,7 +1290,7 @@ export function ReviewApp() {
           }
           const parent = commitParent(sha)
           const subject = commitSubject(sha)
-          setReviewSource({ kind: "commit", sha, parent, subject })
+          setReviewSourcePersist({ kind: "commit", sha, parent, subject })
           load()
           setStatus(`reviewing: commit ${sha.slice(0, 7)}`)
           return
@@ -1292,7 +1328,7 @@ export function ReviewApp() {
             setView("log")
             return
           }
-          setReviewSource({ kind: "branch", base, mergeBase: mb })
+          setReviewSourcePersist({ kind: "branch", base, mergeBase: mb })
           load()
           setStatus(`reviewing: everything on ${current} since ${base}`)
           return
@@ -1999,6 +2035,8 @@ export function ReviewApp() {
     if (savedCwd !== null && savedCwd !== root) previousProject = savedCwd
     setProjectsOpen(false)
     setMenuOpen(false)
+    const saved = loadSavedReviewSource(root)
+    if (saved) setReviewSource(saved)
     setCwd(root)
     setHasProject(true)
     load()
