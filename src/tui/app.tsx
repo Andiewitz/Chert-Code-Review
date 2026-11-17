@@ -1485,7 +1485,7 @@ export function ReviewApp() {
       case "themes": {
         const arg = rest.trim().toLowerCase()
         if (arg === "") {
-          // The bottom suggestion box lists the themes; nothing to do here.
+          setPromptValue("/themes ")
           return
         }
         // resolve name/alias
