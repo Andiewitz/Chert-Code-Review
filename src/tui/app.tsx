@@ -587,7 +587,11 @@ export function ReviewApp() {
     const v = inputValue().trimStart()
     const lower = v.toLowerCase()
     if (!lower.startsWith("/themes")) return null
-    return v.slice("/themes".length).trimStart()
+    const rest = v.slice("/themes".length)
+    // Only show the theme list once the user has moved past the command name
+    // (a trailing space or partial theme name), not while typing "/themes".
+    if (rest === "" || !/^\s/.test(rest)) return null
+    return rest.trimStart()
   })
 
   const allThemeTargets = createMemo(() => {
