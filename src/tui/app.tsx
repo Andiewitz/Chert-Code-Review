@@ -260,6 +260,7 @@ interface CommandDef {
 
 const COMMAND_DEFS: CommandDef[] = [
   { name: "help", usage: "/help", description: "show this list" },
+  { name: "home", usage: "/home", description: "open the menu" },
   { name: "refresh", usage: "/refresh", description: "re-scan the working tree" },
   { name: "open", usage: "/open <query>", description: "jump to a file (path match)", takesArg: true },
   { name: "run", usage: "/run <command>", description: "run a shell command in the current project", takesArg: true },
@@ -1092,6 +1093,9 @@ export function ReviewApp() {
       case "help":
         addEntry("system", HELP_TEXT)
         setView("log")
+        return
+      case "home":
+        setMenuOpen(true)
         return
       case "refresh": {
         if (!hasProject()) {
