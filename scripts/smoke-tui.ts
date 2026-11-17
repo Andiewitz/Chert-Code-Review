@@ -386,7 +386,7 @@ async function phaseBTests(): Promise<void> {
     try {
       await setup.renderOnce();
       let frame = setup.captureCharFrame();
-      assert(frame.includes("No project open"), "phaseB empty start state");
+      assert(frame.includes("Recent projects"), "phaseB empty start state");
 
       // /cd alpha opens it
       await setup.mockInput.pressKeys("/cd alpha".split(""));

@@ -194,25 +194,10 @@ function RowList(props: { rows: () => PickerRow[]; index: () => number }) {
   )
 }
 
-/** Launch/home screen: the chert wordmark above a recent-project picker. */
-function HomeScreen(props: { recents: () => Array<{ path: string }>; index: () => number; noProject: boolean }) {
+/** Launch/home screen: recent projects below the wordmark and prompt. */
+function HomeScreen(props: { recents: () => Array<{ path: string }>; index: () => number }) {
   return (
-    <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-      <box height={1} flexShrink={0} />
-      <For each={WORDMARK}>
-        {(line, i) => (
-          <text fg={WORDMARK_FG[i()] ?? COLORS().purple} attributes={ATTR.bold}>
-            {line}
-          </text>
-        )}
-      </For>
-      <box height={1} flexShrink={0} />
-      <text fg={COLORS().dim}>{"review your changes, one file at a time"}</text>
-      <box height={1} flexShrink={0} />
-      <Show when={props.noProject}>
-        <text fg={COLORS().dim} attributes={ATTR.dim}>{"No project open · choose a recent project, or type /cd <path>"}</text>
-        <box height={1} flexShrink={0} />
-      </Show>
+    <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1}>
       <text fg={COLORS().purple} attributes={ATTR.bold}>{"Recent projects"}</text>
       <box height={1} flexShrink={0} />
       <Show
@@ -468,10 +453,10 @@ export function ReviewApp() {
   const patchCache = new Map<string, string>()
   let patchFor = ""
   let diffScrollRef: ScrollBoxRenderable | undefined
+  let inputRef: InputRenderable | undefined
   let codeScrollRef: ScrollBoxRenderable | undefined
   let answerScrollRef: ScrollBoxRenderable | undefined
   let diffRef: any
-  let inputRef: InputRenderable | undefined
   let logRef: ScrollBoxRenderable | undefined
   let treeRef: ScrollBoxRenderable | undefined
   let fileScrollRef: ScrollBoxRenderable | undefined
@@ -2256,12 +2241,45 @@ export function ReviewApp() {
         </text>
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
+      <Show when={!hasProject()}>
+        <box flexShrink={0} flexDirection="column" paddingLeft={2} paddingRight={2}>
+          <box height={1} flexShrink={0} />
+          <For each={WORDMARK}>
+            {(line, i) => (
+              <text fg={WORDMARK_FG[i()] ?? COLORS().purple} attributes={ATTR.bold}>
+                {line}
+              </text>
+            )}
+          </For>
+          <box height={1} flexShrink={0} />
+          <text fg={COLORS().dim}>{"review your changes, one file at a time"}</text>
+          <box height={1} flexShrink={0} />
+        </box>
+      </Show>
+      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+        <text fg={COLORS().purple} attributes={ATTR.bold}>{"> "}</text>
+        <input
+          ref={(el: InputRenderable) => {
+            inputRef = el
+            el.focus()
+          }}
+          flexGrow={1}
+          backgroundColor={COLORS().bg}
+          focusedBackgroundColor={COLORS().bg}
+          textColor={COLORS().bright}
+          focusedTextColor={COLORS().bright}
+          placeholder={hasProject() ? "ask a question, or type / for commands" : "open a project with /cd <path>, or press Esc"}
+          placeholderColor={COLORS().dim}
+          onInput={(value: string) => setInputValue(value)}
+        />
+      </box>
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
 
       <Show when={view() === "done"} fallback={
         <Show when={view() === "log"} fallback={
           <Show when={view() === "tree"} fallback={
             <Show when={mainVisible()}>
-              <Show when={hasProject()} fallback={<HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} noProject={true} />}>
+              <Show when={hasProject()} fallback={<HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} />}>
                 <box flexGrow={1} flexDirection="row">
                   <box width="32%" flexDirection="column" border={["right"]} borderColor={COLORS().rule}>
                     <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1} flexDirection="row">
@@ -2461,7 +2479,7 @@ export function ReviewApp() {
       </Show>
 
       <Show when={projectsOpen()}>
-        <HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} noProject={false} />
+        <HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} />
       </Show>
 
       <Show
@@ -2522,24 +2540,6 @@ export function ReviewApp() {
           </Show>
         </box>
       </Show>
-      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={COLORS().purple} attributes={ATTR.bold}>{"> "}</text>
-        <input
-          ref={(el: InputRenderable) => {
-            inputRef = el
-            el.focus()
-          }}
-          flexGrow={1}
-          backgroundColor={COLORS().bg}
-          focusedBackgroundColor={COLORS().bg}
-          textColor={COLORS().bright}
-          focusedTextColor={COLORS().bright}
-          placeholder={hasProject() ? "ask a question, or type / for commands" : "open a project with /cd <path>, or press Esc"}
-          placeholderColor={COLORS().dim}
-          onInput={(value: string) => setInputValue(value)}
-        />
-      </box>
-      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <Show when={busy()} fallback={
           <>
