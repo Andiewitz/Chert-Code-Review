@@ -39,7 +39,9 @@ Review screen:
 | `Tab` | cycle review → tree → log (not advertised) |
 | `Ctrl+C` | quit |
 
-Project picker:
+Home screen / recent projects (the start screen when you launch outside a git repo,
+and Esc → Recent projects): the purple `chert` wordmark, then your recent projects.
+The highlighted row is bold and accented; `Up`/`Down` moves it, `Enter` opens it.
 
 | key | action |
 |---|---|
