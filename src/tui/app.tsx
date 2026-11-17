@@ -416,6 +416,8 @@ export function ReviewApp() {
   const [allFilesIndex, setAllFilesIndex] = createSignal(0)
   const [reviewPickerOpen, setReviewPickerOpen] = createSignal(false)
   const [reviewPickerIndex, setReviewPickerIndex] = createSignal(0)
+  const [themePickerOpen, setThemePickerOpen] = createSignal(false)
+  const [themePickerIndex, setThemePickerIndex] = createSignal(0)
   const [projectsOpen, setProjectsOpen] = createSignal(false)
   const [projectsIndex, setProjectsIndex] = createSignal(0)
   const [doneIndex, setDoneIndex] = createSignal(0)
@@ -498,7 +500,7 @@ export function ReviewApp() {
   })
 
   // Panels that replace the review: menu, all-files list, recent projects.
-  const mainVisible = createMemo(() => !menuOpen() && !allFilesOpen() && !projectsOpen() && !reviewPickerOpen())
+  const mainVisible = createMemo(() => !menuOpen() && !allFilesOpen() && !projectsOpen() && !reviewPickerOpen() && !themePickerOpen())
 
   function cwdBase(): string {
     const parts = cwd().split(/[\\/]/)
@@ -1454,15 +1456,10 @@ export function ReviewApp() {
         return
       }
       case "themes": {
-        setView("log")
         const arg = rest.trim().toLowerCase()
         if (arg === "") {
-          const cur = currentTheme()
-          const lines = (Object.keys(THEMES) as ThemeName[]).map((t) => {
-            const marker = t === cur ? "← active" : ""
-            return `  ${THEME_LABELS[t].padEnd(16)} ${THEME_DESCRIPTIONS[t]}  ${marker}`.trimEnd()
-          })
-          addEntry("system", `themes:\n${lines.join("\n")}\n\nswitch: /themes <name>  (default, dark-contrast, whiteout, github)`)
+          setThemePickerOpen(true)
+          setThemePickerIndex(0)
           return
         }
         // resolve name/alias
@@ -1495,6 +1492,33 @@ export function ReviewApp() {
   useKeyboard((key) => {
     const hasText = (inputRef?.value ?? "") !== ""
     const showList = pickerOpen() || (commandQuery() !== null && filteredCommands().length > 0)
+
+    // Theme picker (opened by /themes)
+    if (themePickerOpen()) {
+      const themeKeys = Object.keys(THEMES) as ThemeName[]
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault()
+        const dir = key.name === "up" ? -1 : 1
+        setThemePickerIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, themeKeys.length - 1))))
+        return
+      }
+      if (key.name === "return" || key.name === "enter") {
+        key.preventDefault()
+        const t = themeKeys[themePickerIndex()]
+        if (t) {
+          setTheme(t)
+          setStatus(`theme: ${THEME_LABELS[t]}`)
+        }
+        setThemePickerOpen(false)
+        return
+      }
+      if (key.name === "escape") {
+        key.preventDefault()
+        setThemePickerOpen(false)
+        return
+      }
+      return
+    }
 
     // Review source picker (opened by /review)
     if (reviewPickerOpen()) {
@@ -2388,6 +2412,33 @@ export function ReviewApp() {
               index={() => reviewPickerIndex()}
             />
           </scrollbox>
+          <box flexGrow={1} />
+        </box>
+      </Show>
+
+      <Show when={themePickerOpen()}>
+        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
+          <box height={1} flexShrink={0} />
+          <text fg={COLORS().purple} attributes={ATTR.bold}>{"Themes"}</text>
+          <box height={1} flexShrink={0} />
+          <For each={Object.keys(THEMES) as ThemeName[]}>
+            {(t, i) => {
+              const pal = THEMES[t]
+              const active = () => i() === themePickerIndex()
+              return (
+                <box flexDirection="row" height={1} flexShrink={0} backgroundColor={active() ? pal.selectedBg : pal.bg}>
+                  <text fg={active() ? pal.purpleBright : pal.rule}>{active() ? "  ▸ " : "    "}</text>
+                  <text fg={active() ? pal.bright : pal.text} attributes={active() ? ATTR.bold : ATTR.none}>
+                    {THEME_LABELS[t]}
+                  </text>
+                  <box flexGrow={1} />
+                  <text fg={active() ? pal.dim : pal.rule} attributes={ATTR.dim}>
+                    {THEME_DESCRIPTIONS[t]}
+                  </text>
+                </box>
+              )
+            }}
+          </For>
           <box flexGrow={1} />
         </box>
       </Show>
