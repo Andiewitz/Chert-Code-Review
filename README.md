@@ -101,6 +101,7 @@ provider support — all four use OpenAI-compatible APIs:
   switches back to the local CLI
 - `/models <id>` — list a provider's models
 - `/themes [name]` — list or switch color theme (default, dark-contrast, whiteout, github)
+- `/home` — open the menu
 - `/disconnect <id>` — remove a saved key
 
 ## Build a standalone executable
