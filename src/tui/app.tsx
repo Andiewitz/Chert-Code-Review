@@ -50,7 +50,7 @@ const COLORS = {
   text: "#d6d6d6",
   bright: "#ffffff",
   selectedBg: "#1a1a1a",
-  accent: "#98c379",
+  accent: "#61afef",
   danger: "#e06c75",
 }
 
@@ -229,6 +229,8 @@ export function ReviewApp() {
   const [allFilesOpen, setAllFilesOpen] = createSignal(false)
   const [menuIndex, setMenuIndex] = createSignal(0)
   const [allFilesIndex, setAllFilesIndex] = createSignal(0)
+  const [projectsOpen, setProjectsOpen] = createSignal(false)
+  const [projectsIndex, setProjectsIndex] = createSignal(0)
 
   // Phase 4 answer state
   const [answerOpen, setAnswerOpen] = createSignal(false)
@@ -290,6 +292,7 @@ export function ReviewApp() {
   let treeRef: ScrollBoxRenderable | undefined
   let menuSelectRef: SelectRenderable | undefined
   let allFilesSelectRef: SelectRenderable | undefined
+  let projectsSelectRef: SelectRenderable | undefined
 
   const file = createMemo(() => {
     const list = files()
@@ -600,12 +603,13 @@ export function ReviewApp() {
   const menuOptions = createMemo<SelectOption[]>(() => [
     { name: "Project tree", description: "browse all files", value: 0 },
     { name: "Chat history", description: "past questions and answers", value: 1 },
-    { name: "Refresh changes", description: "re-scan the working tree", value: 2 },
-    { name: "Review something else", description: "switch review source", value: 3 },
-    { name: "Review summary", description: "counts of reviewed and asked files", value: 4 },
-    { name: "Next unreviewed file", description: "jump to the next file not marked reviewed", value: 5 },
-    { name: "Help", description: "what the keys do", value: 6 },
-    { name: "Quit", description: "exit chert", value: 7 },
+    { name: "Switch project", description: "open a saved project", value: 2 },
+    { name: "Refresh changes", description: "re-scan the working tree", value: 3 },
+    { name: "Review something else", description: "switch review source", value: 4 },
+    { name: "Review summary", description: "counts of reviewed and asked files", value: 5 },
+    { name: "Next unreviewed file", description: "jump to the next file not marked reviewed", value: 6 },
+    { name: "Help", description: "what the keys do", value: 7 },
+    { name: "Quit", description: "exit chert", value: 8 },
   ])
 
   const allFilesOptions = createMemo<SelectOption[]>(() => {
@@ -1334,6 +1338,7 @@ export function ReviewApp() {
     if (key.name === "escape") {
       if (pickerOpen()) { key.preventDefault(); setPickerOpen(false); return }
       if (menuOpen()) { setMenuOpen(false); setAllFilesOpen(false); return }
+      if (projectsOpen()) { setProjectsOpen(false); return }
       if (allFilesOpen()) { setAllFilesOpen(false); return }
       if (highlightNoteMode()) { setHighlightNoteMode(false); setPendingHighlight(null); clearInput(); setStatus(""); return }
       if (rangeStart() !== null) { setRangeStart(null); setStatus(""); return }
@@ -1365,6 +1370,12 @@ export function ReviewApp() {
         setPromptValue(`/cd ${completed} `)
         return
       }
+      const list = visibleSuggestions()
+      if (list.length > 0) {
+        key.preventDefault()
+        setSuggestionIndex((i) => (i + 1) % list.length)
+        return
+      }
       if (!hasText && view() === "review") {
         key.preventDefault()
         setAskFocus((v) => !v)
@@ -1386,6 +1397,24 @@ export function ReviewApp() {
       if (view() === "tree") { openTreeSelection(); return }
 
       if (menuOpen()) { handleMenuSelection(menuIndex()); return }
+      if (projectsOpen()) {
+        const recents = loadRecent()
+        const item = recents[projectsIndex()]
+        if (item) {
+          setProjectsOpen(false)
+          setMenuOpen(false)
+          const root = enterProject(item.path)
+          if (root !== undefined) {
+            setCwd(root)
+            setHasProject(true)
+            load()
+            setView("review")
+            setStatus(`opened ${basename(root) || root}`)
+            addEntry("system", `project: ${root}`)
+          }
+        }
+        return
+      }
       if (allFilesOpen()) {
         const af = (files() ?? [])[allFilesIndex()]
         if (af) { setAllFilesOpen(false); setMenuOpen(false); selectFile(files()!.indexOf(af)); setFocus("files") }
@@ -1566,6 +1595,20 @@ export function ReviewApp() {
         }
         return
       }
+      if (projectsOpen()) {
+        if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
+          const dir = key.name === "up" ? -1 : 1
+          const recents = loadRecent()
+          setProjectsIndex((i) => {
+            const next = Math.max(0, Math.min(i + dir, Math.max(0, recents.length - 1)))
+            projectsSelectRef?.setSelectedIndex(next)
+            return next
+          })
+          return
+        }
+        return
+      }
       if (allFilesOpen()) {
         if (key.name === "up" || key.name === "down") {
           key.preventDefault()
@@ -1594,16 +1637,21 @@ export function ReviewApp() {
         setMenuOpen(false)
         setView("log")
         return
-      case 2: // Refresh changes
+      case 2: // Switch project
+        setMenuOpen(false)
+        setProjectsOpen(true)
+        setProjectsIndex(0)
+        return
+      case 3: // Refresh changes
         setMenuOpen(false)
         if (hasProject()) { load(); setStatus(`refreshed ${files()?.length ?? 0} files`) }
         return
-      case 3: // Review something else
+      case 4: // Review something else
         setMenuOpen(false)
         addEntry("system", "Type /review working · /review staged · /review branch [name] · /review last · /review commit <ref>")
         setView("log")
         return
-      case 4: // Review summary
+      case 5: // Review summary
         setMenuOpen(false)
         const asked = (files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length
         const hlYours = highlights().filter((h) => h.by === "you").length
@@ -1611,7 +1659,7 @@ export function ReviewApp() {
         addEntry("system", `Reviewed ${reviewedCount()} of ${files()?.length ?? 0} files. Asked about ${asked}. Highlights: ${hlYours} yours, ${hlAi} from the AI.`)
         setView("log")
         return
-      case 5: // Next unreviewed file
+      case 6: // Next unreviewed file
         setMenuOpen(false)
         {
           const unrev = (files() ?? []).find((f) => !reviewed().has(`${f.path}\u0000${Bun.hash(patchCache.get(f.path) ?? "")}`))
@@ -1621,12 +1669,12 @@ export function ReviewApp() {
           }
         }
         return
-      case 6: // Help
+      case 7: // Help
         addEntry("system", HELP_TEXT)
         setView("log")
         setMenuOpen(false)
         return
-      case 7: // Quit
+      case 8: // Quit
         renderer.destroy()
         process.exit(0)
         return
@@ -1828,6 +1876,14 @@ export function ReviewApp() {
     }
     return n
   })
+
+  const projectsOptions = createMemo<SelectOption[]>(() =>
+    loadRecent().map((r, index) => ({
+      name: basename(r.path),
+      description: displayPath(r.path),
+      value: index,
+    })),
+  )
 
   const suggestionWindow = createMemo(() => {
     const list = visibleSuggestions()
@@ -2038,6 +2094,32 @@ export function ReviewApp() {
           <text fg={highlightMenuIndex() === 1 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 1 ? "▸ " : "  "}Edit note`}</text>
           <text fg={highlightMenuIndex() === 2 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 2 ? "▸ " : "  "}${highlightForRowIndex(codeCursorRow())?.by === "ai" ? "Dismiss" : "Remove"}`}</text>
           <text fg={highlightMenuIndex() === 3 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 3 ? "▸ " : "  "}Close`}</text>
+        </box>
+      </Show>
+
+      <Show when={projectsOpen()}>
+        <box flexGrow={1} flexDirection="column" paddingLeft={1}>
+          <text fg={COLORS.bright}>Switch project</text>
+          <box height={1} />
+          <Show when={loadRecent().length > 0} fallback={
+            <text fg={COLORS.dim}>No saved projects yet. Type /cd and a folder path.</text>
+          }>
+            <select
+              ref={(el: SelectRenderable) => (projectsSelectRef = el)}
+              flexGrow={1}
+              options={projectsOptions()}
+              showDescription={true}
+              showScrollIndicator={true}
+              backgroundColor={COLORS.bg}
+              focusedBackgroundColor={COLORS.bg}
+              textColor={COLORS.text}
+              focusedTextColor={COLORS.bright}
+              selectedBackgroundColor={COLORS.selectedBg}
+              selectedTextColor={COLORS.bright}
+              descriptionColor={COLORS.dim}
+              selectedDescriptionColor={COLORS.dim}
+            />
+          </Show>
         </box>
       </Show>
 
