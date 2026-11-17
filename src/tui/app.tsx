@@ -83,18 +83,18 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
   },
   "dark-contrast": {
     bg: "#000000", rule: "#555555", dim: "#aaaaaa", text: "#ffffff", bright: "#ffffff",
-    selectedBg: "#222222", accent: "#ff79c6", purple: "#bd93f9", purpleBright: "#ffffff",
-    purpleDim: "#6272a4", danger: "#ff5555", add: "#50fa7b",
+    selectedBg: "#222222", accent: "#00d4ff", purple: "#00d4ff", purpleBright: "#e0ffff",
+    purpleDim: "#0088aa", danger: "#ff5555", add: "#50fa7b",
   },
   "whiteout": {
     bg: "#ffffff", rule: "#d0d7de", dim: "#57606a", text: "#000000", bright: "#000000",
-    selectedBg: "#eaeef2", accent: "#0969da", purple: "#8250df", purpleBright: "#6639ba",
-    purpleDim: "#d8b9ff", danger: "#8250df", add: "#0969da",
+    selectedBg: "#eaeef2", accent: "#0969da", purple: "#0969da", purpleBright: "#0550ae",
+    purpleDim: "#a5d6ff", danger: "#8250df", add: "#0969da",
   },
   "github": {
     bg: "#0d1117", rule: "#30363d", dim: "#8b949e", text: "#c9d1d9", bright: "#f0f6fc",
-    selectedBg: "#161b22", accent: "#58a6ff", purple: "#a371f7", purpleBright: "#bc8cff",
-    purpleDim: "#6e40c9", danger: "#f85149", add: "#3fb950",
+    selectedBg: "#161b22", accent: "#58a6ff", purple: "#58a6ff", purpleBright: "#79c0ff",
+    purpleDim: "#1f6feb", danger: "#f85149", add: "#3fb950",
   },
 }
 
