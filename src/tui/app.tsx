@@ -87,7 +87,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     purpleDim: "#6272a4", danger: "#ff5555", add: "#50fa7b",
   },
   "whiteout": {
-    bg: "#ffffff", rule: "#d0d7de", dim: "#57606a", text: "#24292f", bright: "#000000",
+    bg: "#ffffff", rule: "#d0d7de", dim: "#57606a", text: "#000000", bright: "#000000",
     selectedBg: "#eaeef2", accent: "#0969da", purple: "#8250df", purpleBright: "#6639ba",
     purpleDim: "#d8b9ff", danger: "#8250df", add: "#0969da",
   },
@@ -416,8 +416,6 @@ export function ReviewApp() {
   const [allFilesIndex, setAllFilesIndex] = createSignal(0)
   const [reviewPickerOpen, setReviewPickerOpen] = createSignal(false)
   const [reviewPickerIndex, setReviewPickerIndex] = createSignal(0)
-  const [themePickerOpen, setThemePickerOpen] = createSignal(false)
-  const [themePickerIndex, setThemePickerIndex] = createSignal(0)
   const [projectsOpen, setProjectsOpen] = createSignal(false)
   const [projectsIndex, setProjectsIndex] = createSignal(0)
   const [doneIndex, setDoneIndex] = createSignal(0)
@@ -500,7 +498,7 @@ export function ReviewApp() {
   })
 
   // Panels that replace the review: menu, all-files list, recent projects.
-  const mainVisible = createMemo(() => !menuOpen() && !allFilesOpen() && !projectsOpen() && !reviewPickerOpen() && !themePickerOpen())
+  const mainVisible = createMemo(() => !menuOpen() && !allFilesOpen() && !projectsOpen() && !reviewPickerOpen())
 
   function cwdBase(): string {
     const parts = cwd().split(/[\\/]/)
@@ -585,6 +583,30 @@ export function ReviewApp() {
     return allReviewTargets().filter((s) => matches(s.label) || matches(s.description) || matches(s.key))
   })
 
+  const themeInput = createMemo(() => {
+    const v = inputValue().trimStart()
+    const lower = v.toLowerCase()
+    if (!lower.startsWith("/themes")) return null
+    return v.slice("/themes".length).trimStart()
+  })
+
+  const allThemeTargets = createMemo(() => {
+    return (Object.keys(THEMES) as ThemeName[]).map((t) => ({
+      key: t,
+      label: THEME_LABELS[t],
+      description: THEME_DESCRIPTIONS[t],
+      insert: `/themes ${t}`,
+    }))
+  })
+
+  const themeSuggestions = createMemo(() => {
+    const q = themeInput()
+    if (q === null) return [] as Suggestion[]
+    const needle = q.toLowerCase()
+    const matches = (text: string) => needle === "" || text.toLowerCase().includes(needle)
+    return allThemeTargets().filter((s) => matches(s.label) || matches(s.description) || matches(s.key))
+  })
+
   const filteredCommands = createMemo(() => {
     const q = commandQuery()
     if (q === null) return [] as Suggestion[]
@@ -596,6 +618,7 @@ export function ReviewApp() {
 
   const visibleSuggestions = createMemo(() => {
     if (pickerOpen()) return COMMAND_DEFS.map(commandToSuggestion)
+    if (themeInput() !== null) return themeSuggestions()
     return filteredCommands()
   })
 
@@ -1458,8 +1481,7 @@ export function ReviewApp() {
       case "themes": {
         const arg = rest.trim().toLowerCase()
         if (arg === "") {
-          setThemePickerOpen(true)
-          setThemePickerIndex(0)
+          // The bottom suggestion box lists the themes; nothing to do here.
           return
         }
         // resolve name/alias
@@ -1491,34 +1513,7 @@ export function ReviewApp() {
   // Keyboard handling: no modes. Box empty => screen keys. Box has text => editing.
   useKeyboard((key) => {
     const hasText = (inputRef?.value ?? "") !== ""
-    const showList = pickerOpen() || (commandQuery() !== null && filteredCommands().length > 0)
-
-    // Theme picker (opened by /themes)
-    if (themePickerOpen()) {
-      const themeKeys = Object.keys(THEMES) as ThemeName[]
-      if (key.name === "up" || key.name === "down") {
-        key.preventDefault()
-        const dir = key.name === "up" ? -1 : 1
-        setThemePickerIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, themeKeys.length - 1))))
-        return
-      }
-      if (key.name === "return" || key.name === "enter") {
-        key.preventDefault()
-        const t = themeKeys[themePickerIndex()]
-        if (t) {
-          setTheme(t)
-          setStatus(`theme: ${THEME_LABELS[t]}`)
-        }
-        setThemePickerOpen(false)
-        return
-      }
-      if (key.name === "escape") {
-        key.preventDefault()
-        setThemePickerOpen(false)
-        return
-      }
-      return
-    }
+    const showList = pickerOpen() || (commandQuery() !== null && filteredCommands().length > 0) || (themeInput() !== null && themeSuggestions().length > 0)
 
     // Review source picker (opened by /review)
     if (reviewPickerOpen()) {
@@ -1663,6 +1658,11 @@ export function ReviewApp() {
       key.preventDefault()
       if (pickerOpen() && visibleSuggestions().length > 0) {
         acceptSuggestion(visibleSuggestions()[Math.min(suggestionIndex(), visibleSuggestions().length - 1)])
+        return
+      }
+      if (themeInput() !== null && visibleSuggestions().length > 0) {
+        acceptSuggestion(visibleSuggestions()[Math.min(suggestionIndex(), visibleSuggestions().length - 1)])
+        submit()
         return
       }
       if (hasText) {
@@ -2196,7 +2196,7 @@ export function ReviewApp() {
 
   const suggestionWindow = createMemo(() => {
     const list = visibleSuggestions()
-    const show = pickerOpen() || (commandQuery() !== null && list.length > 0)
+    const show = pickerOpen() || (commandQuery() !== null && list.length > 0) || (themeInput() !== null && list.length > 0)
     if (!show) return { items: [] as Suggestion[], offset: 0, show: false }
     const max = 8
     const idx = Math.min(suggestionIndex(), Math.max(0, list.length - 1))
@@ -2416,32 +2416,6 @@ export function ReviewApp() {
         </box>
       </Show>
 
-      <Show when={themePickerOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-          <box height={1} flexShrink={0} />
-          <text fg={COLORS().purple} attributes={ATTR.bold}>{"Themes"}</text>
-          <box height={1} flexShrink={0} />
-          <For each={Object.keys(THEMES) as ThemeName[]}>
-            {(t, i) => {
-              const pal = THEMES[t]
-              const active = () => i() === themePickerIndex()
-              return (
-                <box flexDirection="row" height={1} flexShrink={0} backgroundColor={active() ? pal.selectedBg : pal.bg}>
-                  <text fg={active() ? pal.purpleBright : pal.rule}>{active() ? "  ▸ " : "    "}</text>
-                  <text fg={active() ? pal.bright : pal.text} attributes={active() ? ATTR.bold : ATTR.none}>
-                    {THEME_LABELS[t]}
-                  </text>
-                  <box flexGrow={1} />
-                  <text fg={active() ? pal.dim : pal.rule} attributes={ATTR.dim}>
-                    {THEME_DESCRIPTIONS[t]}
-                  </text>
-                </box>
-              )
-            }}
-          </For>
-          <box flexGrow={1} />
-        </box>
-      </Show>
 
       <Show when={highlightMenuOpen()}>
         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
@@ -2470,10 +2444,14 @@ export function ReviewApp() {
             {(cmd, i) => {
               const idx = () => suggestionWindow().offset + i()
               const active = () => idx() === Math.min(suggestionIndex(), Math.max(0, visibleSuggestions().length - 1))
+              const pal = () => (themeInput() !== null ? THEMES[cmd.key as ThemeName] : null)
+              const bg = () => pal() ? (active() ? pal()!.selectedBg : pal()!.bg) : (active() ? COLORS().selectedBg : COLORS().bg)
+              const labelFg = () => pal() ? (active() ? pal()!.bright : pal()!.accent) : (active() ? COLORS().bright : COLORS().accent)
+              const descFg = () => pal() ? (active() ? pal()!.text : pal()!.dim) : (active() ? COLORS().text : COLORS().dim)
               return (
-                <box height={1} flexDirection="row" backgroundColor={active() ? COLORS().selectedBg : COLORS().bg}>
-                  <text fg={active() ? COLORS().bright : COLORS().accent}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
-                  <text fg={active() ? COLORS().text : COLORS().dim}>{cmd.description}</text>
+                <box height={1} flexDirection="row" backgroundColor={bg()}>
+                  <text fg={labelFg()}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
+                  <text fg={descFg()}>{cmd.description}</text>
                 </box>
               )
             }}
