@@ -44,14 +44,14 @@ import type { Highlight, HighlightLevel } from "../highlights"
 // ---------------------------------------------------------------------------
 
 const COLORS = {
-  bg: "#1e1e1e",
-  rule: "#3a3a3a",
+  bg: "#000000",
+  rule: "#2a2a2a",
   dim: "#9a9a9a",
   text: "#d6d6d6",
   bright: "#ffffff",
-  selectedBg: "#2e2e2e",
-  accent: "#7aa2f7",
-  danger: "#cc6666",
+  selectedBg: "#1a1a1a",
+  accent: "#98c379",
+  danger: "#e06c75",
 }
 
 const STATUS_GLYPH: Record<ReviewFile["status"], string> = {
