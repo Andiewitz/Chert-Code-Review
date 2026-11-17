@@ -100,6 +100,7 @@ provider support — all four use OpenAI-compatible APIs:
 - `/use <id> [model]` — route plain-text prompts to a provider; `/use opencode`
   switches back to the local CLI
 - `/models <id>` — list a provider's models
+- `/themes [name]` — list or switch color theme (default, dark-contrast, whiteout, github)
 - `/disconnect <id>` — remove a saved key
 
 ## Build a standalone executable

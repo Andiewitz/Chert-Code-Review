@@ -13,6 +13,7 @@ import {
   PROVIDERS,
   chatCompletion,
   clearProviderKey,
+  configDir,
   findProvider,
   getActive,
   keySource,
@@ -35,7 +36,7 @@ import {
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { loadHighlights, parseAgentHighlights, saveHighlights, resolveHighlights } from "../highlights"
 import type { Highlight, HighlightLevel } from "../highlights"
 
@@ -43,20 +44,84 @@ import type { Highlight, HighlightLevel } from "../highlights"
 // UI
 // ---------------------------------------------------------------------------
 
-const COLORS = {
-  bg: "#0f0d13",
-  rule: "#2a2433",
-  dim: "#7d7488",
-  text: "#cfc8d8",
-  bright: "#f6f2fb",
-  selectedBg: "#241d33",
-  accent: "#a78bfa",
-  purple: "#a78bfa",
-  purpleBright: "#d6c6ff",
-  purpleDim: "#6d5bb0",
-  danger: "#e5788a",
-  add: "#7ec699",
+export type ThemeName = "default" | "dark-contrast" | "whiteout" | "github"
+
+export const THEME_LABELS: Record<ThemeName, string> = {
+  "default": "Default",
+  "dark-contrast": "Dark Contrast",
+  "whiteout": "Whiteout",
+  "github": "GitHub",
 }
+
+export const THEME_DESCRIPTIONS: Record<ThemeName, string> = {
+  "default": "The default chert theme.",
+  "dark-contrast": "Pure black background with maximum-contrast colors.",
+  "whiteout": "White background; blue instead of green, purple instead of red.",
+  "github": "GitHub's color palette.",
+}
+
+export interface ThemePalette {
+  bg: string
+  rule: string
+  dim: string
+  text: string
+  bright: string
+  selectedBg: string
+  accent: string
+  purple: string
+  purpleBright: string
+  purpleDim: string
+  danger: string
+  add: string
+}
+
+export const THEMES: Record<ThemeName, ThemePalette> = {
+  "default": {
+    bg: "#0f0d13", rule: "#2a2433", dim: "#7d7488", text: "#cfc8d8", bright: "#f6f2fb",
+    selectedBg: "#241d33", accent: "#a78bfa", purple: "#a78bfa", purpleBright: "#d6c6ff",
+    purpleDim: "#6d5bb0", danger: "#e5788a", add: "#7ec699",
+  },
+  "dark-contrast": {
+    bg: "#000000", rule: "#555555", dim: "#aaaaaa", text: "#ffffff", bright: "#ffffff",
+    selectedBg: "#222222", accent: "#ff79c6", purple: "#bd93f9", purpleBright: "#ffffff",
+    purpleDim: "#6272a4", danger: "#ff5555", add: "#50fa7b",
+  },
+  "whiteout": {
+    bg: "#ffffff", rule: "#d0d7de", dim: "#57606a", text: "#24292f", bright: "#000000",
+    selectedBg: "#eaeef2", accent: "#0969da", purple: "#8250df", purpleBright: "#6639ba",
+    purpleDim: "#d8b9ff", danger: "#8250df", add: "#0969da",
+  },
+  "github": {
+    bg: "#0d1117", rule: "#30363d", dim: "#8b949e", text: "#c9d1d9", bright: "#f0f6fc",
+    selectedBg: "#161b22", accent: "#58a6ff", purple: "#a371f7", purpleBright: "#bc8cff",
+    purpleDim: "#6e40c9", danger: "#f85149", add: "#3fb950",
+  },
+}
+
+function loadThemeName(): ThemeName {
+  try {
+    const raw = readFileSync(join(configDir(), "theme.json"), "utf8")
+    const parsed = JSON.parse(raw) as { theme?: string }
+    if (parsed && typeof parsed.theme === "string" && parsed.theme in THEMES) return parsed.theme as ThemeName
+  } catch { /* ignore */ }
+  return "default"
+}
+
+function saveThemeName(name: ThemeName): void {
+  try {
+    mkdirSync(configDir(), { recursive: true })
+    writeFileSync(join(configDir(), "theme.json"), JSON.stringify({ theme: name }) + "\n")
+  } catch { /* ignore */ }
+}
+
+const [themeName, setThemeNameSignal] = createSignal<ThemeName>(loadThemeName())
+export function currentTheme(): ThemeName { return themeName() }
+export function setTheme(name: ThemeName): void {
+  setThemeNameSignal(name)
+  saveThemeName(name)
+}
+export function colors(): ThemePalette { return THEMES[themeName()] }
+export const COLORS = colors
 
 // Terminal cells have no font size, so hierarchy comes from weight and tone:
 // bold + bright for what the eye should land on, dim for everything else.
@@ -111,14 +176,14 @@ function RowList(props: { rows: () => PickerRow[]; index: () => number }) {
       {(row, i) => {
         const active = () => i() === props.index()
         return (
-          <box flexDirection="row" height={1} flexShrink={0} backgroundColor={active() ? COLORS.selectedBg : COLORS.bg}>
-            <text fg={active() ? COLORS.purpleBright : COLORS.rule}>{active() ? "  ▸ " : "    "}</text>
-            <text fg={active() ? COLORS.bright : COLORS.text} attributes={active() ? ATTR.bold : ATTR.none}>
+          <box flexDirection="row" height={1} flexShrink={0} backgroundColor={active() ? COLORS().selectedBg : COLORS().bg}>
+            <text fg={active() ? COLORS().purpleBright : COLORS().rule}>{active() ? "  ▸ " : "    "}</text>
+            <text fg={active() ? COLORS().bright : COLORS().text} attributes={active() ? ATTR.bold : ATTR.none}>
               {row.label}
             </text>
             <box flexGrow={1} />
             <Show when={row.hint !== undefined}>
-              <text fg={active() ? COLORS.dim : COLORS.rule} attributes={ATTR.dim}>
+              <text fg={active() ? COLORS().dim : COLORS().rule} attributes={ATTR.dim}>
                 {row.hint ?? ""}
               </text>
             </Show>
@@ -136,23 +201,23 @@ function HomeScreen(props: { recents: () => Array<{ path: string }>; index: () =
       <box height={1} flexShrink={0} />
       <For each={WORDMARK}>
         {(line, i) => (
-          <text fg={WORDMARK_FG[i()] ?? COLORS.purple} attributes={ATTR.bold}>
+          <text fg={WORDMARK_FG[i()] ?? COLORS().purple} attributes={ATTR.bold}>
             {line}
           </text>
         )}
       </For>
       <box height={1} flexShrink={0} />
-      <text fg={COLORS.dim}>{"review your changes, one file at a time"}</text>
+      <text fg={COLORS().dim}>{"review your changes, one file at a time"}</text>
       <box height={1} flexShrink={0} />
       <Show when={props.noProject}>
-        <text fg={COLORS.dim} attributes={ATTR.dim}>{"No project open · choose a recent project, or type /cd <path>"}</text>
+        <text fg={COLORS().dim} attributes={ATTR.dim}>{"No project open · choose a recent project, or type /cd <path>"}</text>
         <box height={1} flexShrink={0} />
       </Show>
-      <text fg={COLORS.purple} attributes={ATTR.bold}>{"Recent projects"}</text>
+      <text fg={COLORS().purple} attributes={ATTR.bold}>{"Recent projects"}</text>
       <box height={1} flexShrink={0} />
       <Show
         when={props.recents().length > 0}
-        fallback={<text fg={COLORS.dim} attributes={ATTR.dim}>{"Nothing here yet — type /cd <path> to open a project."}</text>}
+        fallback={<text fg={COLORS().dim} attributes={ATTR.dim}>{"Nothing here yet — type /cd <path> to open a project."}</text>}
       >
         <RowList
           rows={() =>
@@ -175,11 +240,14 @@ const STATUS_GLYPH: Record<ReviewFile["status"], string> = {
 
 type EntryKind = "user" | "agent" | "system" | "error"
 
-const ENTRY_FG: Record<EntryKind, string> = {
-  user: COLORS.accent,
-  agent: COLORS.text,
-  system: COLORS.dim,
-  error: COLORS.danger,
+function entryFg(kind: EntryKind): string {
+  const c = COLORS()
+  switch (kind) {
+    case "user": return c.accent
+    case "agent": return c.text
+    case "system": return c.dim
+    case "error": return c.danger
+  }
 }
 
 interface CommandDef {
@@ -208,6 +276,7 @@ const COMMAND_DEFS: CommandDef[] = [
   { name: "disconnect", usage: "/disconnect <provider>", description: "remove a saved provider key", takesArg: true },
   { name: "use", usage: "/use <connector> [model]", description: "route plain-text prompts (opencode or a provider)", takesArg: true },
   { name: "models", usage: "/models [provider]", description: "list a provider's models", takesArg: true },
+  { name: "themes", usage: "/themes [name]", description: "list or switch color theme", takesArg: true },
   { name: "quit", aliases: ["exit", "q"], usage: "/quit", description: "exit chert (Ctrl+C also works)" },
 ]
 
@@ -1384,6 +1453,34 @@ export function ReviewApp() {
           })
         return
       }
+      case "themes": {
+        setView("log")
+        const arg = rest.trim().toLowerCase()
+        if (arg === "") {
+          const cur = currentTheme()
+          const lines = (Object.keys(THEMES) as ThemeName[]).map((t) => {
+            const marker = t === cur ? "← active" : ""
+            return `  ${THEME_LABELS[t].padEnd(16)} ${THEME_DESCRIPTIONS[t]}  ${marker}`.trimEnd()
+          })
+          addEntry("system", `themes:\n${lines.join("\n")}\n\nswitch: /themes <name>  (default, dark-contrast, whiteout, github)`)
+          return
+        }
+        // resolve name/alias
+        const aliases: Record<string, ThemeName> = {
+          default: "default", dark: "dark-contrast", "dark-contrast": "dark-contrast", contrast: "dark-contrast",
+          white: "whiteout", whiteout: "whiteout", light: "whiteout",
+          github: "github", gh: "github",
+        }
+        const resolved = aliases[arg]
+        if (!resolved) {
+          addEntry("error", `unknown theme "${rest}" — try: default, dark-contrast, whiteout, github`)
+          return
+        }
+        setTheme(resolved)
+        addEntry("system", `theme: ${THEME_LABELS[resolved]}`)
+        setStatus(`theme: ${THEME_LABELS[resolved]}`)
+        return
+      }
       case "quit":
         renderer.destroy()
         process.exit(0)
@@ -2031,10 +2128,10 @@ export function ReviewApp() {
   })
 
   function highlightColor(h: Highlight): string {
-    if (h.by === "you") return COLORS.accent
-    if (h.level === "high") return COLORS.danger
+    if (h.by === "you") return COLORS().accent
+    if (h.level === "high") return COLORS().danger
     if (h.level === "medium") return "#e0af68"
-    return COLORS.dim
+    return COLORS().dim
   }
 
 
@@ -2087,22 +2184,22 @@ export function ReviewApp() {
   })
 
   return (
-    <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
+    <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS().bg}>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={COLORS.purple} attributes={ATTR.bold}>chert</text>
-        <text fg={COLORS.dim}>{` · ${headerInfo()}`}</text>
+        <text fg={COLORS().purple} attributes={ATTR.bold}>chert</text>
+        <text fg={COLORS().dim}>{` · ${headerInfo()}`}</text>
         <box flexGrow={1} />
-        <text fg={COLORS.dim} attributes={ATTR.dim}>{`[ ${activeLabel()} ]`}</text>
+        <text fg={COLORS().dim} attributes={ATTR.dim}>{`[ ${activeLabel()} ]`}</text>
       </box>
-      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={COLORS.dim} attributes={ATTR.dim}>{hasProject() && view() === "review" ? sourceLabel() : " "}</text>
+        <text fg={COLORS().dim} attributes={ATTR.dim}>{hasProject() && view() === "review" ? sourceLabel() : " "}</text>
         <box flexGrow={1} />
-        <text fg={COLORS.purpleBright} attributes={ATTR.dim}>
+        <text fg={COLORS().purpleBright} attributes={ATTR.dim}>
           {hasProject() && view() === "review" ? stepHeader() : " "}
         </text>
       </box>
-      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
 
       <Show when={view() === "done"} fallback={
         <Show when={view() === "log"} fallback={
@@ -2110,14 +2207,14 @@ export function ReviewApp() {
             <Show when={mainVisible()}>
               <Show when={hasProject()} fallback={<HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} noProject={true} />}>
                 <box flexGrow={1} flexDirection="row">
-                  <box width="32%" flexDirection="column" border={["right"]} borderColor={COLORS.rule}>
+                  <box width="32%" flexDirection="column" border={["right"]} borderColor={COLORS().rule}>
                     <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1} flexDirection="row">
-                      <text fg={focus() === "files" ? COLORS.purple : COLORS.dim} attributes={ATTR.bold}>
+                      <text fg={focus() === "files" ? COLORS().purple : COLORS().dim} attributes={ATTR.bold}>
                         {`${focus() === "files" ? "\u25B8 " : "  "}Files`}
                       </text>
-                      <text fg={COLORS.dim} attributes={ATTR.dim}>{` (${files()?.length ?? 0})`}</text>
+                      <text fg={COLORS().dim} attributes={ATTR.dim}>{` (${files()?.length ?? 0})`}</text>
                     </box>
-                    <scrollbox ref={(el: ScrollBoxRenderable) => { fileScrollRef = el }} flexGrow={1} backgroundColor={COLORS.bg}>
+                    <scrollbox ref={(el: ScrollBoxRenderable) => { fileScrollRef = el }} flexGrow={1} backgroundColor={COLORS().bg}>
                       <For each={files() ?? []}>
                         {(f, i) => {
                           const active = () => i() === selected()
@@ -2125,14 +2222,14 @@ export function ReviewApp() {
                           const glyph = () =>
                             f.status === "deleted" ? "D" : f.status === "added" || f.status === "untracked" ? "A" : "M"
                           const glyphFg = () =>
-                            f.status === "deleted" ? COLORS.danger : f.status === "added" || f.status === "untracked" ? COLORS.add : COLORS.purpleBright
+                            f.status === "deleted" ? COLORS().danger : f.status === "added" || f.status === "untracked" ? COLORS().add : COLORS().purpleBright
                           return (
-                            <box flexDirection="row" height={1} flexShrink={0} backgroundColor={active() ? COLORS.selectedBg : COLORS.bg}>
-                              <text fg={active() ? COLORS.purpleBright : COLORS.rule}>{active() ? "\u25B8 " : "  "}</text>
-                              <text fg={done() ? COLORS.add : glyphFg()} attributes={done() ? ATTR.bold : ATTR.none}>
+                            <box flexDirection="row" height={1} flexShrink={0} backgroundColor={active() ? COLORS().selectedBg : COLORS().bg}>
+                              <text fg={active() ? COLORS().purpleBright : COLORS().rule}>{active() ? "\u25B8 " : "  "}</text>
+                              <text fg={done() ? COLORS().add : glyphFg()} attributes={done() ? ATTR.bold : ATTR.none}>
                                 {done() ? "\u2713 " : `${glyph()} `}
                               </text>
-                              <text fg={active() ? COLORS.bright : COLORS.text} attributes={active() ? ATTR.bold : ATTR.none}>
+                              <text fg={active() ? COLORS().bright : COLORS().text} attributes={active() ? ATTR.bold : ATTR.none}>
                                 {shortenPath(f.path, 18)}
                               </text>
                             </box>
@@ -2143,24 +2240,24 @@ export function ReviewApp() {
                   </box>
                   <box flexGrow={1} flexDirection="column" paddingLeft={1}>
                     <box height={1} flexShrink={0} flexDirection="row">
-                      <text fg={focus() === "code" ? COLORS.bright : COLORS.text} attributes={ATTR.bold}>
+                      <text fg={focus() === "code" ? COLORS().bright : COLORS().text} attributes={ATTR.bold}>
                         {file()?.path ?? ""}
                       </text>
                       <box flexGrow={1} />
-                      <text fg={COLORS.dim} attributes={ATTR.dim}>
+                      <text fg={COLORS().dim} attributes={ATTR.dim}>
                         {`${file() ? (file()!.status === "added" || file()!.status === "untracked" ? "new" : file()!.status === "deleted" ? "deleted" : "changed") : ""}  ${file() ? `+${file()!.additions} -${file()!.deletions}` : ""}`}
                       </text>
                     </box>
-                    <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+                    <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
                     <Show when={(files()?.length ?? 0) === 0}>
                       <box height={1} flexShrink={0} paddingTop={1} paddingLeft={1}>
-                        <text fg={COLORS.dim}>{"Nothing to review — the working tree is clean."}</text>
+                        <text fg={COLORS().dim}>{"Nothing to review — the working tree is clean."}</text>
                       </box>
                     </Show>
                     <scrollbox
                       ref={(el: ScrollBoxRenderable) => { codeScrollRef = el }}
                       flexGrow={1}
-                      backgroundColor={COLORS.bg}
+                      backgroundColor={COLORS().bg}
                     >
                       <For each={codeRows()}>
                         {(row, i) => {
@@ -2169,12 +2266,12 @@ export function ReviewApp() {
                           const num = row.kind === "del" ? (row.oldNo ?? "") : (row.newNo ?? "")
                           const h = () => highlightForRowIndex(i())
                           return (
-                            <box flexDirection="row" backgroundColor={isCursor() ? COLORS.selectedBg : (row.kind === "add" ? "#1a2420" : row.kind === "del" ? "#2a1a1f" : COLORS.bg)}>
-                              <text fg={COLORS.purple}>{isCursor() && focus() === "code" ? ">" : " "}</text>
-                              <text fg={h() ? highlightColor(h()!) : COLORS.dim}>{h() ? "\u258C" : " "}</text>
-                              <text fg={COLORS.dim}>{String(num).padStart(4)} </text>
+                            <box flexDirection="row" backgroundColor={isCursor() ? COLORS().selectedBg : (row.kind === "add" ? "#1a2420" : row.kind === "del" ? "#2a1a1f" : COLORS().bg)}>
+                              <text fg={COLORS().purple}>{isCursor() && focus() === "code" ? ">" : " "}</text>
+                              <text fg={h() ? highlightColor(h()!) : COLORS().dim}>{h() ? "\u258C" : " "}</text>
+                              <text fg={COLORS().dim}>{String(num).padStart(4)} </text>
                               <text
-                                fg={row.kind === "add" ? COLORS.add : row.kind === "del" ? COLORS.danger : row.kind === "hunk" ? COLORS.purple : row.kind === "meta" ? COLORS.dim : COLORS.text}
+                                fg={row.kind === "add" ? COLORS().add : row.kind === "del" ? COLORS().danger : row.kind === "hunk" ? COLORS().purple : row.kind === "meta" ? COLORS().dim : COLORS().text}
                                 attributes={row.kind === "meta" ? ATTR.dim : ATTR.none}
                               >{`${gutter} ${row.text}`}</text>
                             </box>
@@ -2183,14 +2280,14 @@ export function ReviewApp() {
                       </For>
                     </scrollbox>
                     <Show when={answerOpen() && answerFile() === (file()?.path ?? "")}>
-                      <box height="35%" border={["top"]} borderColor={COLORS.rule} flexDirection="column" paddingLeft={1}>
-                        <text fg={COLORS.dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "\u2026" : lastQuestion()}  \u00b7  ${activeLabel()}`}</text>
+                      <box height="35%" border={["top"]} borderColor={COLORS().rule} flexDirection="column" paddingLeft={1}>
+                        <text fg={COLORS().dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "\u2026" : lastQuestion()}  \u00b7  ${activeLabel()}`}</text>
                         <scrollbox
                           ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
                           flexGrow={1}
-                          backgroundColor={COLORS.bg}
+                          backgroundColor={COLORS().bg}
                         >
-                          <text wrapMode="word" fg={busy() ? COLORS.dim : (answerIsError() ? COLORS.danger : COLORS.text)}>{busy() ? status() : lastAnswer()}</text>
+                          <text wrapMode="word" fg={busy() ? COLORS().dim : (answerIsError() ? COLORS().danger : COLORS().text)}>{busy() ? status() : lastAnswer()}</text>
                         </scrollbox>
                       </box>
                     </Show>
@@ -2201,13 +2298,13 @@ export function ReviewApp() {
           }>{/* Tree view */}
             <Show when={hasProject()} fallback={
               <box flexGrow={1} paddingLeft={1}>
-                <text fg={COLORS.dim}>No project open. Type /cd and a project name or folder, for example /cd myapp</text>
+                <text fg={COLORS().dim}>No project open. Type /cd and a project name or folder, for example /cd myapp</text>
               </box>
             }>
-              <scrollbox ref={(el: ScrollBoxRenderable) => (treeRef = el)} flexGrow={1} backgroundColor={COLORS.bg} paddingLeft={1}>
+              <scrollbox ref={(el: ScrollBoxRenderable) => (treeRef = el)} flexGrow={1} backgroundColor={COLORS().bg} paddingLeft={1}>
                 <For each={treeLines()}>
                   {(line, index) => (
-                    <text fg={index() === treeIndex() ? COLORS.bright : line.isDir ? COLORS.dim : COLORS.text}>
+                    <text fg={index() === treeIndex() ? COLORS().bright : line.isDir ? COLORS().dim : COLORS().text}>
                       {`${index() === treeIndex() ? "▸ " : "  "}${line.text}`}
                     </text>
                   )}
@@ -2216,11 +2313,11 @@ export function ReviewApp() {
             </Show>
           </Show>
         }>{/* Log view */}
-          <scrollbox ref={(el: ScrollBoxRenderable) => (logRef = el)} flexGrow={1} backgroundColor={COLORS.bg} paddingLeft={1}>
+          <scrollbox ref={(el: ScrollBoxRenderable) => (logRef = el)} flexGrow={1} backgroundColor={COLORS().bg} paddingLeft={1}>
             <For each={transcript()}>
               {(entry) => (
                 <For each={entry.text.split("\n")}>
-                  {(line) => <text fg={ENTRY_FG[entry.kind]}>{line === "" ? " " : line}</text>}
+                  {(line) => <text fg={entryFg(entry.kind)}>{line === "" ? " " : line}</text>}
                 </For>
               )}
             </For>
@@ -2228,13 +2325,13 @@ export function ReviewApp() {
         </Show>
       }>{/* Done view */}
         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
-          <text fg={COLORS.bright}>All done.</text>
-          <text fg={COLORS.dim}>{` You looked at ${files()?.length ?? 0} files:  asked about ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length},  skipped ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length} without asking.`}</text>
+          <text fg={COLORS().bright}>All done.</text>
+          <text fg={COLORS().dim}>{` You looked at ${files()?.length ?? 0} files:  asked about ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length},  skipped ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length} without asking.`}</text>
           <Show when={(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length === 0}>
-            <text fg={COLORS.dim}>You asked about every file.</text>
+            <text fg={COLORS().dim}>You asked about every file.</text>
           </Show>
           <box height={1} />
-          <text fg={COLORS.purple} attributes={ATTR.bold}>{"What next"}</text>
+          <text fg={COLORS().purple} attributes={ATTR.bold}>{"What next"}</text>
           <box height={1} />
           <RowList rows={() => doneOptions().map((o) => ({ label: o.name }))} index={() => doneIndex()} />
           <box flexGrow={1} />
@@ -2248,13 +2345,13 @@ export function ReviewApp() {
           <box height={1} flexShrink={0} />
           <For each={WORDMARK}>
             {(line, i) => (
-              <text fg={WORDMARK_FG[i()] ?? COLORS.purple} attributes={ATTR.bold}>
+              <text fg={WORDMARK_FG[i()] ?? COLORS().purple} attributes={ATTR.bold}>
                 {line}
               </text>
             )}
           </For>
           <box height={1} flexShrink={0} />
-          <text fg={COLORS.dim} attributes={ATTR.dim}>{"menu"}</text>
+          <text fg={COLORS().dim} attributes={ATTR.dim}>{"menu"}</text>
           <box height={1} flexShrink={0} />
           <RowList
             rows={() => menuOptions().map((o) => ({ label: o.name, hint: o.description }))}
@@ -2268,9 +2365,9 @@ export function ReviewApp() {
       <Show when={allFilesOpen()}>
         <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
           <box height={1} flexShrink={0} />
-          <text fg={COLORS.purple} attributes={ATTR.bold}>{`All files (${files()?.length ?? 0})`}</text>
+          <text fg={COLORS().purple} attributes={ATTR.bold}>{`All files (${files()?.length ?? 0})`}</text>
           <box height={1} flexShrink={0} />
-          <scrollbox ref={(el: ScrollBoxRenderable) => { allFilesScrollRef = el }} flexGrow={1} backgroundColor={COLORS.bg}>
+          <scrollbox ref={(el: ScrollBoxRenderable) => { allFilesScrollRef = el }} flexGrow={1} backgroundColor={COLORS().bg}>
             <RowList
               rows={() => allFilesOptions().map((o) => ({ label: o.name, hint: o.description }))}
               index={() => allFilesIndex()}
@@ -2283,9 +2380,9 @@ export function ReviewApp() {
       <Show when={reviewPickerOpen()}>
         <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
           <box height={1} flexShrink={0} />
-          <text fg={COLORS.purple} attributes={ATTR.bold}>{"Review source"}</text>
+          <text fg={COLORS().purple} attributes={ATTR.bold}>{"Review source"}</text>
           <box height={1} flexShrink={0} />
-          <scrollbox ref={(el: ScrollBoxRenderable) => { reviewPickerScrollRef = el }} flexGrow={1} backgroundColor={COLORS.bg}>
+          <scrollbox ref={(el: ScrollBoxRenderable) => { reviewPickerScrollRef = el }} flexGrow={1} backgroundColor={COLORS().bg}>
             <RowList
               rows={() => allReviewTargets().map((s) => ({ label: s.label, hint: s.description }))}
               index={() => reviewPickerIndex()}
@@ -2297,12 +2394,12 @@ export function ReviewApp() {
 
       <Show when={highlightMenuOpen()}>
         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
-          <text fg={COLORS.bright}>Highlight</text>
+          <text fg={COLORS().bright}>Highlight</text>
           <box height={1} />
-          <text fg={highlightMenuIndex() === 0 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 0 ? "▸ " : "  "}Ask the AI about these lines`}</text>
-          <text fg={highlightMenuIndex() === 1 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 1 ? "▸ " : "  "}Edit note`}</text>
-          <text fg={highlightMenuIndex() === 2 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 2 ? "▸ " : "  "}${highlightForRowIndex(codeCursorRow())?.by === "ai" ? "Dismiss" : "Remove"}`}</text>
-          <text fg={highlightMenuIndex() === 3 ? COLORS.bright : COLORS.dim}>{`${highlightMenuIndex() === 3 ? "▸ " : "  "}Close`}</text>
+          <text fg={highlightMenuIndex() === 0 ? COLORS().bright : COLORS().dim}>{`${highlightMenuIndex() === 0 ? "▸ " : "  "}Ask the AI about these lines`}</text>
+          <text fg={highlightMenuIndex() === 1 ? COLORS().bright : COLORS().dim}>{`${highlightMenuIndex() === 1 ? "▸ " : "  "}Edit note`}</text>
+          <text fg={highlightMenuIndex() === 2 ? COLORS().bright : COLORS().dim}>{`${highlightMenuIndex() === 2 ? "▸ " : "  "}${highlightForRowIndex(codeCursorRow())?.by === "ai" ? "Dismiss" : "Remove"}`}</text>
+          <text fg={highlightMenuIndex() === 3 ? COLORS().bright : COLORS().dim}>{`${highlightMenuIndex() === 3 ? "▸ " : "  "}Close`}</text>
         </box>
       </Show>
 
@@ -2312,20 +2409,20 @@ export function ReviewApp() {
 
       <Show
         when={suggestionWindow().show}
-        fallback={<box height={1} flexShrink={0} border={["top"]} borderColor={COLORS.rule} />}
+        fallback={<box height={1} flexShrink={0} border={["top"]} borderColor={COLORS().rule} />}
       >
-        <box flexShrink={0} flexDirection="column" border={["top"]} borderColor={COLORS.rule} paddingLeft={1} paddingRight={1}>
+        <box flexShrink={0} flexDirection="column" border={["top"]} borderColor={COLORS().rule} paddingLeft={1} paddingRight={1}>
           <Show when={pickerOpen()}>
-            <text fg={COLORS.dim}> commands (Ctrl+P)</text>
+            <text fg={COLORS().dim}> commands (Ctrl+P)</text>
           </Show>
           <For each={suggestionWindow().items}>
             {(cmd, i) => {
               const idx = () => suggestionWindow().offset + i()
               const active = () => idx() === Math.min(suggestionIndex(), Math.max(0, visibleSuggestions().length - 1))
               return (
-                <box height={1} flexDirection="row" backgroundColor={active() ? COLORS.selectedBg : COLORS.bg}>
-                  <text fg={active() ? COLORS.bright : COLORS.accent}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
-                  <text fg={active() ? COLORS.text : COLORS.dim}>{cmd.description}</text>
+                <box height={1} flexDirection="row" backgroundColor={active() ? COLORS().selectedBg : COLORS().bg}>
+                  <text fg={active() ? COLORS().bright : COLORS().accent}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
+                  <text fg={active() ? COLORS().text : COLORS().dim}>{cmd.description}</text>
                 </box>
               )
             }}
@@ -2335,7 +2432,7 @@ export function ReviewApp() {
 
       <Show when={cdMatches() !== null}>
         <box height={1} flexShrink={0} paddingLeft={1}>
-          <text fg={COLORS.dim}>
+          <text fg={COLORS().dim}>
             {cdMatches()!.length === 0
               ? "no saved project matches, press Enter to try it as a folder"
               : `matches: ${cdMatches()!.join(" · ")}`}
@@ -2344,7 +2441,7 @@ export function ReviewApp() {
       </Show>
       <Show when={noteStrip() !== ""}>
         <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1}>
-          <text fg={COLORS.purpleBright} attributes={ATTR.dim}>{noteStrip()}</text>
+          <text fg={COLORS().purpleBright} attributes={ATTR.dim}>{noteStrip()}</text>
         </box>
       </Show>
       <Show when={hasProject() && view() === "review" && !menuOpen() && !allFilesOpen() && !projectsOpen()}>
@@ -2352,47 +2449,47 @@ export function ReviewApp() {
           <For each={ACTION_ITEMS}>
             {(label, i) => (
               <text
-                fg={i() === action() ? COLORS.bg : COLORS.dim}
-                bg={i() === action() ? COLORS.purple : undefined}
+                fg={i() === action() ? COLORS().bg : COLORS().dim}
+                bg={i() === action() ? COLORS().purple : undefined}
                 attributes={i() === action() ? ATTR.bold : ATTR.none}
               >{` ${label} `}</text>
             )}
           </For>
           <box flexGrow={1} />
           <Show when={focus() === "code"}>
-            <text fg={COLORS.purple} attributes={ATTR.dim}>{"highlight mode · Esc to leave"}</text>
+            <text fg={COLORS().purple} attributes={ATTR.dim}>{"highlight mode · Esc to leave"}</text>
           </Show>
         </box>
       </Show>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={COLORS.purple} attributes={ATTR.bold}>{"> "}</text>
+        <text fg={COLORS().purple} attributes={ATTR.bold}>{"> "}</text>
         <input
           ref={(el: InputRenderable) => {
             inputRef = el
             el.focus()
           }}
           flexGrow={1}
-          backgroundColor={COLORS.bg}
-          focusedBackgroundColor={COLORS.bg}
-          textColor={COLORS.bright}
-          focusedTextColor={COLORS.bright}
+          backgroundColor={COLORS().bg}
+          focusedBackgroundColor={COLORS().bg}
+          textColor={COLORS().bright}
+          focusedTextColor={COLORS().bright}
           placeholder={hasProject() ? "ask a question, or type / for commands" : "open a project with /cd <path>, or press Esc"}
-          placeholderColor={COLORS.dim}
+          placeholderColor={COLORS().dim}
           onInput={(value: string) => setInputValue(value)}
         />
       </box>
-      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS.rule} />
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <Show when={busy()} fallback={
           <>
-            <text fg={COLORS.dim} attributes={ATTR.dim}>{footerHints()}</text>
+            <text fg={COLORS().dim} attributes={ATTR.dim}>{footerHints()}</text>
             <box flexGrow={1} />
             <Show when={status() !== ""}>
-              <text fg={COLORS.purpleBright} attributes={ATTR.dim}>{status()}</text>
+              <text fg={COLORS().purpleBright} attributes={ATTR.dim}>{status()}</text>
             </Show>
           </>
         }>
-          <text fg={COLORS.purple} attributes={ATTR.dim}>{`${status()} · Ctrl+C quit`}</text>
+          <text fg={COLORS().purple} attributes={ATTR.dim}>{`${status()} · Ctrl+C quit`}</text>
         </Show>
       </box>
     </box>
