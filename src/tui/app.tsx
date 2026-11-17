@@ -405,6 +405,8 @@ export function ReviewApp() {
   let logRef: ScrollBoxRenderable | undefined
   let treeRef: ScrollBoxRenderable | undefined
   let fileScrollRef: ScrollBoxRenderable | undefined
+  let allFilesScrollRef: ScrollBoxRenderable | undefined
+  let reviewPickerScrollRef: ScrollBoxRenderable | undefined
 
   const file = createMemo(() => {
     const list = files()
@@ -1403,7 +1405,11 @@ export function ReviewApp() {
         key.preventDefault()
         const items = allReviewTargets()
         const dir = key.name === "up" ? -1 : 1
-        setReviewPickerIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, items.length - 1))))
+        setReviewPickerIndex((i) => {
+          const next = Math.max(0, Math.min(i + dir, Math.max(0, items.length - 1)))
+          try { reviewPickerScrollRef?.scrollTo({ x: 0, y: Math.max(0, next - 6) }) } catch { /* ignore */ }
+          return next
+        })
         return
       }
       if (key.name === "return" || key.name === "enter") {
@@ -1790,6 +1796,7 @@ export function ReviewApp() {
           const dir = key.name === "up" ? -1 : 1
           setAllFilesIndex((i) => {
             const next = Math.max(0, Math.min(i + dir, (files()?.length ?? 1) - 1))
+            try { allFilesScrollRef?.scrollTo({ x: 0, y: Math.max(0, next - 6) }) } catch { /* ignore */ }
             return next
           })
           return
@@ -2263,10 +2270,12 @@ export function ReviewApp() {
           <box height={1} flexShrink={0} />
           <text fg={COLORS.purple} attributes={ATTR.bold}>{`All files (${files()?.length ?? 0})`}</text>
           <box height={1} flexShrink={0} />
-          <RowList
-            rows={() => allFilesOptions().map((o) => ({ label: o.name, hint: o.description }))}
-            index={() => allFilesIndex()}
-          />
+          <scrollbox ref={(el: ScrollBoxRenderable) => { allFilesScrollRef = el }} flexGrow={1} backgroundColor={COLORS.bg}>
+            <RowList
+              rows={() => allFilesOptions().map((o) => ({ label: o.name, hint: o.description }))}
+              index={() => allFilesIndex()}
+            />
+          </scrollbox>
           <box flexGrow={1} />
         </box>
       </Show>
@@ -2276,10 +2285,12 @@ export function ReviewApp() {
           <box height={1} flexShrink={0} />
           <text fg={COLORS.purple} attributes={ATTR.bold}>{"Review source"}</text>
           <box height={1} flexShrink={0} />
-          <RowList
-            rows={() => allReviewTargets().map((s) => ({ label: s.label, hint: s.description }))}
-            index={() => reviewPickerIndex()}
-          />
+          <scrollbox ref={(el: ScrollBoxRenderable) => { reviewPickerScrollRef = el }} flexGrow={1} backgroundColor={COLORS.bg}>
+            <RowList
+              rows={() => allReviewTargets().map((s) => ({ label: s.label, hint: s.description }))}
+              index={() => reviewPickerIndex()}
+            />
+          </scrollbox>
           <box flexGrow={1} />
         </box>
       </Show>
