@@ -3,7 +3,7 @@ import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { TextAttributes, extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption } from "@opentui/core"
 import { basename, dirname, join, resolve } from "node:path"
-import { commitParent, commitSubject, currentBranch, gitDir, listChangedFiles, loadPatch, mergeBase, resolveReviewBase, resolveSha, validateRef } from "../git"
+import { commitParent, commitSubject, currentBranch, gitDir, listChangedFiles, listRecentCommits, loadPatch, mergeBase, resolveReviewBase, resolveSha, validateRef } from "../git"
 import type { ReviewSource } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
@@ -95,6 +95,13 @@ function shortenPath(p: string, max: number): string {
 interface PickerRow {
   label: string
   hint?: string
+}
+
+interface Suggestion {
+  key: string
+  label: string
+  description: string
+  insert: string
 }
 
 /** A keyboard-driven list: arrows move the cursor, Enter acts on it. */
@@ -463,16 +470,60 @@ export function ReviewApp() {
     return body.toLowerCase()
   })
 
+  function commandToSuggestion(def: CommandDef): Suggestion {
+    const label = `/${def.name}${def.aliases?.length ? ` (${def.aliases.join(", ")})` : ""}`
+    return { key: def.name, label, description: def.description, insert: `/${def.name}${def.takesArg ? " " : ""}` }
+  }
+
+  const reviewInput = createMemo(() => {
+    const v = inputValue().trimStart()
+    const lower = v.toLowerCase()
+    if (!lower.startsWith("/review")) return null
+    return v.slice("/review".length).trimStart()
+  })
+
+  const reviewSuggestions = createMemo(() => {
+    const q = reviewInput()
+    if (q === null) return [] as Suggestion[]
+    const needle = q.toLowerCase()
+    const matches = (text: string) => needle === "" || text.toLowerCase().includes(needle)
+    const items: Suggestion[] = []
+    const targets: { key: string; description: string; insert: string }[] = [
+      { key: "working", description: "uncommitted changes", insert: "/review working" },
+      { key: "staged", description: "staged changes", insert: "/review staged" },
+      { key: "last", description: "the last commit", insert: "/review last" },
+      { key: "branch", description: "everything on this branch since base", insert: "/review branch " },
+    ]
+    for (const t of targets) {
+      if (matches(t.key) || matches(t.description) || matches(t.insert)) {
+        items.push({ key: t.key, label: `/review ${t.key}`, description: t.description, insert: t.insert })
+      }
+    }
+    if (hasProject()) {
+      for (const c of listRecentCommits()) {
+        const short = c.sha.slice(0, 7)
+        if (matches(short) || matches(c.subject) || matches(c.sha)) {
+          items.push({ key: c.sha, label: short, description: c.subject, insert: `/review commit ${c.sha}` })
+        }
+      }
+    }
+    return items
+  })
+
   const filteredCommands = createMemo(() => {
     const q = commandQuery()
-    if (q === null) return [] as CommandDef[]
+    if (q === null) return [] as Suggestion[]
     return COMMAND_DEFS.map((def) => ({ def, score: scoreCommand(def, q) }))
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || a.def.name.localeCompare(b.def.name))
-      .map((x) => x.def)
+      .map((x) => commandToSuggestion(x.def))
   })
 
-  const visibleSuggestions = createMemo(() => (pickerOpen() ? COMMAND_DEFS : filteredCommands()))
+  const visibleSuggestions = createMemo(() => {
+    if (pickerOpen()) return COMMAND_DEFS.map(commandToSuggestion)
+    if (reviewInput() !== null) return reviewSuggestions()
+    return filteredCommands()
+  })
 
   createEffect(() => {
     pickerOpen()
@@ -480,9 +531,9 @@ export function ReviewApp() {
     setSuggestionIndex(0)
   })
 
-  function acceptSuggestion(cmd: CommandDef | undefined): void {
-    if (!cmd) return
-    setPromptValue(`/${cmd.name}${cmd.takesArg ? " " : ""}`)
+  function acceptSuggestion(s: Suggestion | undefined): void {
+    if (!s) return
+    setPromptValue(s.insert)
     setPickerOpen(false)
   }
 
@@ -1351,7 +1402,7 @@ export function ReviewApp() {
   // Keyboard handling: no modes. Box empty => screen keys. Box has text => editing.
   useKeyboard((key) => {
     const hasText = (inputRef?.value ?? "") !== ""
-    const showList = pickerOpen() || (commandQuery() !== null && (filteredCommands().length > 0))
+    const showList = pickerOpen() || (commandQuery() !== null && filteredCommands().length > 0) || (reviewInput() !== null && reviewSuggestions().length > 0)
 
     // Ctrl+P command picker
     if (key.ctrl && key.name === "p") {
@@ -1997,7 +2048,7 @@ export function ReviewApp() {
   const suggestionWindow = createMemo(() => {
     const list = visibleSuggestions()
     const show = pickerOpen() || (commandQuery() !== null && list.length > 0)
-    if (!show) return { items: [] as CommandDef[], offset: 0, show: false }
+    if (!show) return { items: [] as Suggestion[], offset: 0, show: false }
     const max = 8
     const idx = Math.min(suggestionIndex(), Math.max(0, list.length - 1))
     let start = 0
@@ -2226,10 +2277,9 @@ export function ReviewApp() {
             {(cmd, i) => {
               const idx = () => suggestionWindow().offset + i()
               const active = () => idx() === Math.min(suggestionIndex(), Math.max(0, visibleSuggestions().length - 1))
-              const label = `/${cmd.name}${cmd.aliases?.length ? ` (${cmd.aliases.join(", ")})` : ""}`
               return (
                 <box height={1} flexDirection="row" backgroundColor={active() ? COLORS.selectedBg : COLORS.bg}>
-                  <text fg={active() ? COLORS.bright : COLORS.accent}>{`${active() ? "▸ " : "  "}${label}`.padEnd(28)}</text>
+                  <text fg={active() ? COLORS.bright : COLORS.accent}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
                   <text fg={active() ? COLORS.text : COLORS.dim}>{cmd.description}</text>
                 </box>
               )

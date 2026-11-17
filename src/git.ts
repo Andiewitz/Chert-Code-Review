@@ -293,6 +293,25 @@ export function resolveReviewBase(): string | null {
   return null;
 }
 
+/** List recent commits as { sha, subject }. */
+export function listRecentCommits(limit = 40): { sha: string; subject: string }[] {
+  try {
+    const out = run(["log", `--max-count=${limit}`, "--format=%H%x09%s"])
+    return out
+      .trim()
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((line) => {
+        const idx = line.indexOf("\t")
+        const sha = idx === -1 ? line.trim() : line.slice(0, idx).trim()
+        const subject = idx === -1 ? "" : line.slice(idx + 1).trim()
+        return { sha, subject }
+      })
+  } catch {
+    return []
+  }
+}
+
 /** Get commit subject (truncated). */
 export function commitSubject(sha: string): string {
   try {
