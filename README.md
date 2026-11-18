@@ -29,32 +29,33 @@ typing and Enter go to the text.
 
 Review screen (the prompt and action bar stay at the top, above the files):
 
-| key | action |
-|---|---|
-| `Up` / `Down` | previous / next file |
-| `Left` / `Right` | move across the action bar: Back · Is it messy? · Is it safe? · Next |
-| `Enter` | run the highlighted action |
-| `Space` | mark the file reviewed |
-| `h` | highlight mode: `↑↓` moves the line cursor, `Enter` selects a line or range, `Esc` leaves |
-| `PgUp` / `PgDn` | scroll the answer pane (when open) or the diff |
-| `Esc` | open the menu (or close it) |
-| `Ctrl+C` | quit |
+| key              | action                                                                                    |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| `Up` / `Down`    | previous / next file                                                                      |
+| `Left` / `Right` | move across the action bar: Back · Is it messy? · Is it safe? · Next                      |
+| `Enter`          | run the highlighted action                                                                |
+| `Space`          | mark the file reviewed                                                                    |
+| `h`              | highlight mode: `↑↓` moves the line cursor, `Enter` selects a line or range, `Esc` leaves |
+| `PgUp` / `PgDn`  | scroll the answer pane (when open) or the diff                                            |
+| `Esc`            | open the menu (or close it)                                                               |
+| `Ctrl+C`         | quit                                                                                      |
 
 Home screen / recent projects (the start screen when you launch outside a git repo,
 and Esc → Recent projects): the purple `chert` wordmark, then your recent projects.
 The highlighted row is bold and accented; `Up`/`Down` moves it, `Enter` opens it.
 
-| key | action |
-|---|---|
-| `Up` / `Down` | choose a project |
-| `Enter` | open the highlighted project (or a typed path) |
-| `Delete` | remove a recent project from the list (files untouched) |
-| `Esc` | go back (only if a project is already open) |
-| `Ctrl+C` | quit |
+| key           | action                                                  |
+| ------------- | ------------------------------------------------------- |
+| `Up` / `Down` | choose a project                                        |
+| `Enter`       | open the highlighted project (or a typed path)          |
+| `Delete`      | remove a recent project from the list (files untouched) |
+| `Esc`         | go back (only if a project is already open)             |
+| `Ctrl+C`      | quit                                                    |
 
 Done screen and menus: `Up`/`Down` choose, `Enter` go, `Esc` close.
 
 Other:
+
 - `Enter` in the tree — open the selected file's diff in the review view
 - `/cd <name or path>` — switch to a saved or new project
 - `/cd` — list saved projects
@@ -87,12 +88,12 @@ in the current project directory (opencode must be installed; no API keys needed
 Plain-text prompts go to the opencode agent by default. `/connect` adds direct
 provider support — all four use OpenAI-compatible APIs:
 
-| provider | id | key env var | default model |
-|---|---|---|---|
-| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
-| Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
-| Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
-| NVIDIA NIM | `nim` (alias `nvidia`) | `NVIDIA_API_KEY` | `meta/llama-3.3-70b-instruct` |
+| provider      | id                     | key env var          | default model                 |
+| ------------- | ---------------------- | -------------------- | ----------------------------- |
+| OpenRouter    | `openrouter`           | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini`          |
+| Google Gemini | `gemini`               | `GEMINI_API_KEY`     | `gemini-2.5-flash`            |
+| Groq          | `groq`                 | `GROQ_API_KEY`       | `llama-3.3-70b-versatile`     |
+| NVIDIA NIM    | `nim` (alias `nvidia`) | `NVIDIA_API_KEY`     | `meta/llama-3.3-70b-instruct` |
 
 - `/connect` — status of every connector (key source, model, active)
 - `/connect <id> <key>` — save a key to `~/.chert/connectors.json` (chmod 600),

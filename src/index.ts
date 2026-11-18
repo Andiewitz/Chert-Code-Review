@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.0"
 
 function printHelp(): void {
   console.log(`chert v${VERSION}
@@ -16,70 +16,64 @@ Commands:
   tui [path]      same thing, spelled out
 
 Keys inside the TUI: ↑↓ files · ←→ action · Enter run · Space reviewed ·
-  h highlight · Esc menu · Ctrl+C quit. Type / for commands.`);
+  h highlight · Esc menu · Ctrl+C quit. Type / for commands.`)
 }
 
 async function launchTui(startDir?: string): Promise<void> {
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
-    console.error("chert needs an interactive terminal (TTY) to open the review UI.");
-    process.exit(1);
+    console.error("chert needs an interactive terminal (TTY) to open the review UI.")
+    process.exit(1)
   }
   // Register the Solid TSX transform for runtime loading (replaces bunfig preload,
   // which is not compatible with compiled executables).
-  const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin");
-  ensureSolidTransformPlugin();
-  const { launch } = await import("./tui/app.tsx");
-  await launch(startDir);
+  const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
+  ensureSolidTransformPlugin()
+  const { launch } = await import("./tui/app.tsx")
+  await launch(startDir)
 }
 
 function isFlagOrKnownCommand(arg: string): boolean {
-  return (
-    arg === "tui" ||
-    arg === "-h" ||
-    arg === "--help" ||
-    arg === "-v" ||
-    arg === "--version"
-  );
+  return arg === "tui" || arg === "-h" || arg === "--help" || arg === "-v" || arg === "--version"
 }
 
-const args = Bun.argv.slice(2);
-const [command, ...rest] = args;
+const args = Bun.argv.slice(2)
+const [command, ...rest] = args
 
 switch (command) {
   case undefined: {
-    await launchTui();
-    break;
+    await launchTui()
+    break
   }
   case "tui": {
-    await launchTui(rest[0]);
-    break;
+    await launchTui(rest[0])
+    break
   }
   case "-h":
   case "--help": {
-    printHelp();
-    break;
+    printHelp()
+    break
   }
   case "-v":
   case "--version": {
-    console.log(VERSION);
-    break;
+    console.log(VERSION)
+    break
   }
   default: {
     if (!isFlagOrKnownCommand(command)) {
       try {
-        const { statSync } = await import("node:fs");
-        const { expandPath } = await import("./projects.ts");
-        const p = expandPath(command);
+        const { statSync } = await import("node:fs")
+        const { expandPath } = await import("./projects.ts")
+        const p = expandPath(command)
         if (statSync(p).isDirectory()) {
-          await launchTui(command);
-          break;
+          await launchTui(command)
+          break
         }
       } catch {
         // fall through to error
       }
     }
-    console.error(`no such folder or command: ${command}`);
-    printHelp();
-    process.exit(1);
+    console.error(`no such folder or command: ${command}`)
+    printHelp()
+    process.exit(1)
   }
 }

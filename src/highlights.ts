@@ -2,9 +2,9 @@
 // Pure helpers (resolveHighlights) plus storage (load/save) that writes only
 // to <gitDir>/chert/highlights.json.
 
-import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { gitDir, run } from "./git";
+import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync, mkdirSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { gitDir, run } from "./git"
 
 export type HighlightSide = "new" | "old"
 export type HighlightBy = "you" | "ai"
@@ -117,13 +117,21 @@ export function resolveHighlights(
     for (let i = 0; i < sideRows.length; i++) {
       // check if storedText matches starting at i
       let match = true
-      if (storedText.length === 0) { match = false }
+      if (storedText.length === 0) {
+        match = false
+      }
       for (let k = 0; k < storedText.length; k++) {
         const row = sideRows[i + k]
-        if (!row) { match = false; break }
+        if (!row) {
+          match = false
+          break
+        }
         if (row.r.text !== storedText[k]) {
           // try trimmed
-          if (row.r.text.trim() !== storedText[k].trim()) { match = false; break }
+          if (row.r.text.trim() !== storedText[k].trim()) {
+            match = false
+            break
+          }
         }
       }
       if (match) candidates.push(i)
@@ -172,7 +180,6 @@ export function resolveHighlights(
   return result
 }
 
-
 export interface ParsedAgentHighlight {
   file: string
   side: HighlightSide
@@ -215,24 +222,51 @@ export function parseAgentHighlights(
   const existingKeys = new Set(existing.map((h) => `${h.path}:${h.side}:${h.start}-${h.end}`))
   const candidates: ParsedAgentHighlight[] = []
   for (const item of parsed) {
-    if (!item || typeof item !== "object") { skipped.push("invalid entry"); continue }
+    if (!item || typeof item !== "object") {
+      skipped.push("invalid entry")
+      continue
+    }
     const file = typeof item.file === "string" ? item.file : ""
-    if (!changedFiles.includes(file)) { skipped.push(`unknown file: ${file}`); continue }
+    if (!changedFiles.includes(file)) {
+      skipped.push(`unknown file: ${file}`)
+      continue
+    }
     const side: HighlightSide = item.side === "old" ? "old" : "new"
     const start = typeof item.start === "number" ? item.start : NaN
     const end = typeof item.end === "number" ? item.end : start
-    if (!Number.isFinite(start) || !Number.isFinite(end)) { skipped.push("invalid line numbers"); continue }
-    if (end < start) { skipped.push("end before start"); continue }
-    if (end - start + 1 > 30) { skipped.push("range too large"); continue }
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      skipped.push("invalid line numbers")
+      continue
+    }
+    if (end < start) {
+      skipped.push("end before start")
+      continue
+    }
+    if (end - start + 1 > 30) {
+      skipped.push("range too large")
+      continue
+    }
     const level = item.level === "high" || item.level === "medium" || item.level === "low" ? item.level : null
-    if (level === null) { skipped.push("invalid level"); continue }
+    if (level === null) {
+      skipped.push("invalid level")
+      continue
+    }
     const note = typeof item.note === "string" ? item.note.trim().slice(0, 200) : ""
-    if (note === "") { skipped.push("empty note"); continue }
+    if (note === "") {
+      skipped.push("empty note")
+      continue
+    }
 
     const rows = rowsByFile.get(file)
-    if (!rows) { skipped.push(`no rows for ${file}`); continue }
-    const sideRows = rows.filter((r) => (side === "new" ? (r.kind === "context" || r.kind === "add") : (r.kind === "context" || r.kind === "del")))
-    const lineNoOf = (r: { oldNo?: number; newNo?: number }) => (side === "new" ? (r.newNo ?? 0) : (r.oldNo ?? 0))
+    if (!rows) {
+      skipped.push(`no rows for ${file}`)
+      continue
+    }
+    const sideRows = rows.filter((r) =>
+      side === "new" ? r.kind === "context" || r.kind === "add" : r.kind === "context" || r.kind === "del",
+    )
+    const lineNoOf = (r: { oldNo?: number; newNo?: number }) =>
+      side === "new" ? (r.newNo ?? 0) : (r.oldNo ?? 0)
     // validate start/end are real line numbers
     const startRowIdx = sideRows.findIndex((r) => lineNoOf(r) === start)
     const endRowIdx = sideRows.findIndex((r) => lineNoOf(r) === end)
@@ -243,12 +277,21 @@ export function parseAgentHighlights(
     // check consecutive
     let ok = true
     for (let k = 0; k <= endRowIdx - startRowIdx; k++) {
-      if (lineNoOf(sideRows[startRowIdx + k]) !== start + k) { ok = false; break }
+      if (lineNoOf(sideRows[startRowIdx + k]) !== start + k) {
+        ok = false
+        break
+      }
     }
-    if (!ok) { skipped.push(`non-consecutive lines: ${file}:${start}-${end}`); continue }
+    if (!ok) {
+      skipped.push(`non-consecutive lines: ${file}:${start}-${end}`)
+      continue
+    }
 
     const key = `${file}:${side}:${start}-${end}`
-    if (existingKeys.has(key)) { skipped.push(`duplicate: ${file}:${start}-${end}`); continue }
+    if (existingKeys.has(key)) {
+      skipped.push(`duplicate: ${file}:${start}-${end}`)
+      continue
+    }
 
     const textLines = sideRows.slice(startRowIdx, endRowIdx + 1).map((r) => r.text)
     const before = sideRows.slice(Math.max(0, startRowIdx - 2), startRowIdx).map((r) => r.text)

@@ -6,7 +6,7 @@
 // while, and the real renderer's event loop handles concurrent async work fine
 // (the synchronous git layer is only deterministic-loading fast local data).
 
-let available: boolean | null = null;
+let available: boolean | null = null
 
 export function opencodeAvailable(): boolean {
   if (available === null) {
@@ -16,13 +16,13 @@ export function opencodeAvailable(): boolean {
         stderr: "pipe",
         stdin: "ignore",
         env: { ...process.env },
-      });
-      available = proc.exitCode === 0;
+      })
+      available = proc.exitCode === 0
     } catch {
-      available = false;
+      available = false
     }
   }
-  return available;
+  return available
 }
 
 export async function runAgent(prompt: string, cwd: string): Promise<string> {
@@ -32,20 +32,20 @@ export async function runAgent(prompt: string, cwd: string): Promise<string> {
     stderr: "pipe",
     stdin: "ignore",
     env: { ...process.env },
-  });
+  })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
-  ]);
+  ])
   if (exitCode !== 0) {
-    throw new Error(stderr.trim() || `opencode run exited with code ${exitCode}`);
+    throw new Error(stderr.trim() || `opencode run exited with code ${exitCode}`)
   }
-  return tailLines(stdout.trim(), 40);
+  return tailLines(stdout.trim(), 40)
 }
 
 export function tailLines(text: string, max: number): string {
-  const lines = text.split("\n");
-  if (lines.length <= max) return text;
-  return `… ${lines.length - max} earlier lines hidden\n${lines.slice(-max).join("\n")}`;
+  const lines = text.split("\n")
+  if (lines.length <= max) return text
+  return `… ${lines.length - max} earlier lines hidden\n${lines.slice(-max).join("\n")}`
 }

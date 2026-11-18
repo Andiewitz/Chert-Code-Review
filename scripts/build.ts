@@ -1,4 +1,4 @@
-import solidPlugin from "@opentui/solid/bun-plugin";
+import solidPlugin from "@opentui/solid/bun-plugin"
 
 const result = await Bun.build({
   entrypoints: ["./src/index.ts"],
@@ -7,15 +7,15 @@ const result = await Bun.build({
   compile: {
     outfile: "./dist/chert",
   },
-});
+})
 
 if (!result.success) {
-  console.error("Build failed:");
+  console.error("Build failed:")
   for (const log of result.logs) {
-    console.error(log);
+    console.error(log)
   }
-  process.exit(1);
+  process.exit(1)
 }
 
-const exe = result.outputs[0]?.path ?? "dist/chert";
-console.log(`Built ${exe}`);
+const exe = result.outputs[0]?.path ?? "dist/chert"
+console.log(`Built ${exe}`)
