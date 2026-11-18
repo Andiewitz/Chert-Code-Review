@@ -1,0 +1,160 @@
+// Navigation commands: which project and which file the review is looking at.
+
+import { basename } from "node:path"
+import { displayPath, forgetProject, loadRecent, parseCdArgument, resolveProject } from "../../projects"
+import type { CommandContext } from "./context"
+
+const NO_PROJECT = "No project open. Press Esc, then pick Pick another project."
+
+export function refreshCommand(ctx: CommandContext): void {
+  if (!ctx.hasProject()) {
+    ctx.addEntry("error", NO_PROJECT)
+    ctx.setView("log")
+    return
+  }
+  ctx.refresh()
+  ctx.setStatus(`refreshed ${ctx.files().length} files`)
+}
+
+export function openCommand(ctx: CommandContext): void {
+  if (!ctx.hasProject()) {
+    ctx.addEntry("error", NO_PROJECT)
+    ctx.setView("log")
+    return
+  }
+  const query = ctx.args.toLowerCase()
+  const list = ctx.files()
+  const index = list.findIndex(
+    (file) =>
+      file.path.toLowerCase() === query ||
+      file.path.toLowerCase().endsWith(query) ||
+      file.path.toLowerCase().includes(query),
+  )
+  if (index === -1) {
+    ctx.addEntry("error", `no file matching "${ctx.args}"`)
+    ctx.setView("log")
+    return
+  }
+  ctx.setView("review")
+  ctx.selectFile(index)
+  ctx.setStatus(`→ ${list[index].path}`)
+}
+
+export function treeCommand(ctx: CommandContext): void {
+  if (!ctx.hasProject()) {
+    ctx.addEntry("error", NO_PROJECT)
+    ctx.setView("log")
+    return
+  }
+  ctx.openTree()
+}
+
+export function cwdCommand(ctx: CommandContext): void {
+  ctx.addEntry("system", `project: ${ctx.projectRoot()}`)
+  ctx.setView("log")
+}
+
+export function projectsCommand(ctx: CommandContext): void {
+  ctx.listProjects()
+}
+
+/** /cd: no argument lists projects, "-" goes back, otherwise open or explain. */
+export function cdCommand(ctx: CommandContext): void {
+  const rest = ctx.args
+  if (rest === "") {
+    ctx.listProjects()
+    return
+  }
+
+  if (rest === "-") {
+    const target = ctx.previousProjectPath()
+    if (target === null) {
+      ctx.addEntry("error", "No previous project.")
+      ctx.setView("log")
+      return
+    }
+    const root = ctx.openProjectAt(target)
+    if (root === undefined) {
+      ctx.addEntry("error", `that folder isn't a git project: ${target}`)
+      ctx.setView("log")
+      return
+    }
+    ctx.setStatus(`opened ${basename(root) || root}`)
+    ctx.addEntry("system", `project: ${root}`)
+    return
+  }
+
+  const query = parseCdArgument(rest)
+  const result = resolveProject(query)
+  if (result.kind === "open") {
+    const root = ctx.openProjectAt(result.root)
+    if (root === undefined) {
+      ctx.addEntry("error", `that folder isn't a git project: ${result.root}`)
+      ctx.setView("log")
+      return
+    }
+    ctx.setStatus(`opened ${result.name}`)
+    ctx.addEntry("system", `project: ${result.root}`)
+    return
+  }
+  if (result.kind === "ambiguous") {
+    const lines = result.matches.map(
+      (match) => `  ${basename(match.path).padEnd(20)}  ${displayPath(match.path)}`,
+    )
+    ctx.addEntry(
+      "system",
+      `Several saved projects match "${query}":\n${lines.join("\n")}\ntype more letters or the full path`,
+    )
+    ctx.setView("log")
+    return
+  }
+  if (result.kind === "contains") {
+    ctx.addEntry(
+      "system",
+      `That folder isn't a git project, but it contains: ${result.repoNames.join(", ")}. Try /cd ${result.repoNames[0]}.`,
+    )
+    ctx.setView("log")
+    return
+  }
+  ctx.addEntry("error", `No project or folder called "${query}". Type /cd alone to see your saved projects.`)
+  ctx.setView("log")
+}
+
+/** /forget accepts a name or a path; the raw name is tried first. */
+export function forgetCommand(ctx: CommandContext): void {
+  const rest = ctx.args
+  if (rest === "") {
+    ctx.addEntry("error", "usage: /forget <name or path>")
+    ctx.setView("log")
+    return
+  }
+  const rawName = rest.trim()
+  const query = parseCdArgument(rest)
+  const recents = loadRecent()
+  let match = recents.find(
+    (recent) =>
+      basename(recent.path).toLowerCase() === rawName.toLowerCase() ||
+      recent.path === query ||
+      basename(recent.path).toLowerCase() === query.toLowerCase(),
+  )
+  if (match === undefined) {
+    const matches = recents.filter((recent) =>
+      basename(recent.path).toLowerCase().includes(query.toLowerCase()),
+    )
+    if (matches.length === 1) {
+      match = matches[0]
+    } else if (matches.length > 1) {
+      ctx.addEntry("error", `Several saved projects match "${query}". Type more letters.`)
+      ctx.setView("log")
+      return
+    }
+  }
+  if (match === undefined) {
+    ctx.addEntry("error", `No saved project called "${query}".`)
+    ctx.setView("log")
+    return
+  }
+  forgetProject(match.path)
+  ctx.addEntry("system", "removed from your list (your files were not touched)")
+  ctx.setView("log")
+}

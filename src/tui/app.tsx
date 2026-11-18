@@ -39,8 +39,6 @@ import {
   findReposBelow,
   forgetProject,
   loadRecent,
-  parseCdArgument,
-  resolveProject,
   resolveProjectRoot,
 } from "../projects"
 import { bestEffort } from "../best-effort"
@@ -49,6 +47,15 @@ import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
 import { HomeScreen } from "./components/home-screen"
 import { RowList } from "./components/row-list"
 import { Wordmark } from "./components/wordmark"
+import {
+  cdCommand,
+  cwdCommand,
+  forgetCommand,
+  openCommand,
+  projectsCommand,
+  refreshCommand,
+  treeCommand,
+} from "./commands/navigation"
 import { helpCommand, homeCommand, quitCommand, runShellCommand, themesCommand } from "./commands/system"
 import { runAgentTurn } from "./services/agent-turn"
 import { shortenPath, truncateEnd } from "./format"
@@ -62,7 +69,7 @@ import {
   resolveCommand,
   scoreCommand,
 } from "./commands/registry"
-import { ATTR, COLORS, THEMES, THEME_DESCRIPTIONS, THEME_LABELS, setTheme } from "./theme"
+import { ATTR, COLORS, THEMES, THEME_DESCRIPTIONS, THEME_LABELS } from "./theme"
 import type { ThemeName } from "./theme"
 import { tailLines } from "../text"
 import { QUESTIONS } from "../questions"
@@ -115,6 +122,13 @@ const HANDLERS: Record<string, CommandHandler> = {
   run: runShellCommand,
   themes: themesCommand,
   quit: quitCommand,
+  refresh: refreshCommand,
+  open: openCommand,
+  cd: cdCommand,
+  projects: projectsCommand,
+  forget: forgetCommand,
+  cwd: cwdCommand,
+  tree: treeCommand,
 }
 
 const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
@@ -886,153 +900,6 @@ export function ReviewApp() {
     }
 
     switch (def.name) {
-      case "refresh": {
-        if (!hasProject()) {
-          addEntry("error", "No project open. Press Esc, then pick Pick another project.")
-          setView("log")
-          return
-        }
-        load()
-        setStatus(`refreshed ${files()?.length ?? 0} files`)
-        return
-      }
-      case "open": {
-        if (!hasProject()) {
-          addEntry("error", "No project open. Press Esc, then pick Pick another project.")
-          setView("log")
-          return
-        }
-        const query = rest.toLowerCase()
-        const list = files() ?? []
-        const index = list.findIndex(
-          (f) =>
-            f.path.toLowerCase() === query ||
-            f.path.toLowerCase().endsWith(query) ||
-            f.path.toLowerCase().includes(query),
-        )
-        if (index === -1) {
-          addEntry("error", `no file matching "${rest}"`)
-          setView("log")
-          return
-        }
-        setView("review")
-        selectFile(index)
-        // reset queue to all files? keep current queue
-        setStatus(`→ ${list[index].path}`)
-        return
-      }
-      case "cd": {
-        if (rest === "") {
-          listProjects()
-          return
-        }
-        if (rest === "-") {
-          if (previousProject === null) {
-            addEntry("error", "No previous project.")
-            setView("log")
-            return
-          }
-          const target = previousProject
-          const savedCwd = hasProject() ? cwd() : null
-          const root = openProject(target)
-          if (root === undefined) {
-            addEntry("error", `that folder isn't a git project: ${target}`)
-            setView("log")
-            return
-          }
-          if (savedCwd !== null && savedCwd !== root) previousProject = savedCwd
-          const saved = loadSavedReviewSource(root)
-          if (saved) setReviewSource(saved)
-          setCwd(root)
-          setHasProject(true)
-          load()
-          setView("review")
-          setStatus(`opened ${basename(root) || root}`)
-          addEntry("system", `project: ${root}`)
-          return
-        }
-        const query = parseCdArgument(rest)
-        const result = resolveProject(query)
-        if (result.kind === "open") {
-          const root = openProject(result.root)
-          if (root === undefined) {
-            addEntry("error", `that folder isn't a git project: ${result.root}`)
-            setView("log")
-            return
-          }
-          const savedCwd = hasProject() ? cwd() : null
-          if (savedCwd !== null && savedCwd !== root) previousProject = savedCwd
-          setCwd(root)
-          setHasProject(true)
-          load()
-          setView("review")
-          setStatus(`opened ${result.name}`)
-          addEntry("system", `project: ${result.root}`)
-          return
-        }
-        if (result.kind === "ambiguous") {
-          const lines = result.matches.map((m) => `  ${basename(m.path).padEnd(20)}  ${displayPath(m.path)}`)
-          addEntry(
-            "system",
-            `Several saved projects match "${query}":\n${lines.join("\n")}\ntype more letters or the full path`,
-          )
-          setView("log")
-          return
-        }
-        if (result.kind === "contains") {
-          addEntry(
-            "system",
-            `That folder isn't a git project, but it contains: ${result.repoNames.join(", ")}. Try /cd ${result.repoNames[0]}.`,
-          )
-          setView("log")
-          return
-        }
-        addEntry(
-          "error",
-          `No project or folder called "${query}". Type /cd alone to see your saved projects.`,
-        )
-        setView("log")
-        return
-      }
-      case "projects": {
-        listProjects()
-        return
-      }
-      case "forget": {
-        if (rest === "") {
-          addEntry("error", "usage: /forget <name or path>")
-          setView("log")
-          return
-        }
-        // /forget accepts a name or a path; try the raw name first.
-        const rawName = rest.trim()
-        const q = parseCdArgument(rest)
-        const recents = loadRecent()
-        let match = recents.find(
-          (r) =>
-            basename(r.path).toLowerCase() === rawName.toLowerCase() ||
-            r.path === q ||
-            basename(r.path).toLowerCase() === q.toLowerCase(),
-        )
-        if (match === undefined) {
-          const matches = recents.filter((r) => basename(r.path).toLowerCase().includes(q.toLowerCase()))
-          if (matches.length === 1) match = matches[0]
-          else if (matches.length > 1) {
-            addEntry("error", `Several saved projects match "${q}". Type more letters.`)
-            setView("log")
-            return
-          }
-        }
-        if (match === undefined) {
-          addEntry("error", `No saved project called "${q}".`)
-          setView("log")
-          return
-        }
-        forgetProject(match.path)
-        addEntry("system", "removed from your list (your files were not touched)")
-        setView("log")
-        return
-      }
       case "review": {
         const tokens = rest.split(/\s+/).filter(Boolean)
         const sub = (tokens[0] ?? "").toLowerCase()
@@ -1199,18 +1066,6 @@ export function ReviewApp() {
         setView("log")
         return
       }
-      case "cwd":
-        addEntry("system", `project: ${cwd()}`)
-        setView("log")
-        return
-      case "tree":
-        if (!hasProject()) {
-          addEntry("error", "No project open. Press Esc, then pick Pick another project.")
-          setView("log")
-          return
-        }
-        loadTree()
-        return
       case "connect": {
         setView("log")
         if (rest === "") {
