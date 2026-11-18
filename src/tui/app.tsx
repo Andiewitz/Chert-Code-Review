@@ -3,19 +3,7 @@ import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { TextAttributes, extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption } from "@opentui/core"
 import { basename, join } from "node:path"
-import {
-  commitParent,
-  commitSubject,
-  currentBranch,
-  gitDir,
-  listChangedFiles,
-  listRecentCommits,
-  loadPatch,
-  mergeBase,
-  resolveReviewBase,
-  resolveSha,
-  validateRef,
-} from "../git"
+import { currentBranch, listChangedFiles, listRecentCommits, loadPatch, resolveSha } from "../git"
 import type { ReviewSource } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
@@ -56,6 +44,7 @@ import {
   refreshCommand,
   treeCommand,
 } from "./commands/navigation"
+import { exportCommand, highlightsCommand, logCommand, reviewCommand } from "./commands/review"
 import { helpCommand, homeCommand, quitCommand, runShellCommand, themesCommand } from "./commands/system"
 import { runAgentTurn } from "./services/agent-turn"
 import { shortenPath, truncateEnd } from "./format"
@@ -129,6 +118,10 @@ const HANDLERS: Record<string, CommandHandler> = {
   forget: forgetCommand,
   cwd: cwdCommand,
   tree: treeCommand,
+  review: reviewCommand,
+  log: logCommand,
+  highlights: highlightsCommand,
+  export: exportCommand,
 }
 
 const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
@@ -900,172 +893,6 @@ export function ReviewApp() {
     }
 
     switch (def.name) {
-      case "review": {
-        const tokens = rest.split(/\s+/).filter(Boolean)
-        const sub = (tokens[0] ?? "").toLowerCase()
-        if (sub === "") {
-          setReviewPickerOpen(true)
-          setReviewPickerIndex(0)
-          return
-        }
-        if (sub === "working") {
-          setReviewSourcePersist({ kind: "working" })
-          load()
-          setStatus("reviewing: uncommitted changes")
-          return
-        }
-        if (sub === "staged") {
-          setReviewSourcePersist({ kind: "staged" })
-          load()
-          setStatus("reviewing: staged changes")
-          return
-        }
-        if (sub === "last") {
-          const sha = resolveSha("HEAD")
-          if (sha === null) {
-            addEntry("error", "No commits yet.")
-            setView("log")
-            return
-          }
-          const parent = commitParent(sha)
-          const subject = commitSubject(sha)
-          setReviewSourcePersist({ kind: "commit", sha, parent, subject })
-          load()
-          setStatus(`reviewing: commit ${sha.slice(0, 7)}`)
-          return
-        }
-        if (sub === "commit") {
-          const ref = tokens[1] ?? ""
-          if (ref === "" || !validateRef(ref)) {
-            addEntry("error", `Not a valid commit: "${ref}".`)
-            setView("log")
-            return
-          }
-          const sha = resolveSha(ref)
-          if (sha === null) {
-            addEntry("error", `Could not resolve "${ref}".`)
-            setView("log")
-            return
-          }
-          const parent = commitParent(sha)
-          const subject = commitSubject(sha)
-          setReviewSourcePersist({ kind: "commit", sha, parent, subject })
-          load()
-          setStatus(`reviewing: commit ${sha.slice(0, 7)}`)
-          return
-        }
-        if (sub === "branch") {
-          const baseArg = tokens.slice(1).join(" ").trim()
-          let base: string | null = null
-          if (baseArg !== "") {
-            if (!validateRef(baseArg)) {
-              addEntry("error", `Not a valid branch: "${baseArg}".`)
-              setView("log")
-              return
-            }
-            base = baseArg
-          } else {
-            base = resolveReviewBase()
-          }
-          if (base === null) {
-            addEntry("error", "I couldn't find the main branch. Type /review branch <name>.")
-            setView("log")
-            return
-          }
-          const current = currentBranch()
-          if (current === base) {
-            addEntry("system", `You're already on ${base}; staying on uncommitted changes.`)
-            setView("log")
-            return
-          }
-          // merge base
-          let mb: string
-          try {
-            mb = mergeBase(current, base)
-          } catch {
-            addEntry("error", `Could not find where ${current} split from ${base}.`)
-            setView("log")
-            return
-          }
-          setReviewSourcePersist({ kind: "branch", base, mergeBase: mb })
-          load()
-          setStatus(`reviewing: everything on ${current} since ${base}`)
-          return
-        }
-        addEntry("error", `Unknown review source "${sub}". Try /review with no arguments.`)
-        setView("log")
-        return
-      }
-      case "log":
-        setView("log")
-        return
-      case "highlights": {
-        const toks = rest.split(/\s+/).filter(Boolean)
-        if (toks[0] === "clear") {
-          if (toks[1] !== "yes") {
-            const count = highlights().length
-            addEntry(
-              "system",
-              `This will delete ${count} saved highlights. Type /highlights clear yes to confirm.`,
-            )
-            setView("log")
-            return
-          }
-          saveHighlights([])
-          setHighlights([])
-          setResolvedHighlights(new Map())
-          addEntry("system", "cleared all highlights")
-          setView("log")
-          return
-        }
-        const hs = highlights()
-        if (hs.length === 0) {
-          addEntry("system", "No highlights yet.")
-          setView("log")
-          return
-        }
-        const lines = hs.map((h) => {
-          const status = resolvedHighlights().get(h.id) === null ? "outdated" : ""
-          return `${h.path}:${h.start}-${h.end}  ${h.by === "you" ? "you" : "AI " + h.level}  ${h.note || "(no note)"}  ${status}`
-        })
-        addEntry("system", lines.join("\n"))
-        setView("log")
-        return
-      }
-      case "export": {
-        const lines: string[] = []
-        lines.push("# chert review export")
-        lines.push(`Project: ${cwd()}`)
-        lines.push(`Reviewing: ${sourceLabel()}`)
-        lines.push(`Date: ${new Date().toISOString()}`)
-        lines.push("")
-        const byFile = new Map<string, any[]>()
-        for (const h of highlights()) {
-          if (!byFile.has(h.path)) byFile.set(h.path, [])
-          byFile.get(h.path)!.push(h)
-        }
-        for (const [path, hs] of byFile) {
-          lines.push(`## ${path}`)
-          for (const h of hs) {
-            lines.push(
-              `- ${h.by === "you" ? "you" : "AI " + h.level} lines ${h.start}-${h.end}: ${h.note || "(no note)"}`,
-            )
-            for (const t of h.text) lines.push(`  > ${t}`)
-          }
-          lines.push("")
-        }
-        const md = lines.join("\n")
-        try {
-          const dir = join(gitDir(), "chert")
-          mkdirSync(dir, { recursive: true })
-          writeFileSync(join(dir, "last-review.md"), md)
-          addEntry("system", `Exported to ${join(dir, "last-review.md")}\n\n${md}`)
-        } catch (error) {
-          addEntry("error", `export failed: ${error instanceof Error ? error.message : String(error)}`)
-        }
-        setView("log")
-        return
-      }
       case "connect": {
         setView("log")
         if (rest === "") {
