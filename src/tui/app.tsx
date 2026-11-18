@@ -49,6 +49,7 @@ import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
 import { HomeScreen } from "./components/home-screen"
 import { RowList } from "./components/row-list"
 import { Wordmark } from "./components/wordmark"
+import { helpCommand, homeCommand, quitCommand, runShellCommand, themesCommand } from "./commands/system"
 import { runAgentTurn } from "./services/agent-turn"
 import { shortenPath, truncateEnd } from "./format"
 import { commandToSuggestion } from "./commands/registry"
@@ -85,8 +86,6 @@ const STATUS_GLYPH: Record<ReviewFile["status"], string> = {
   untracked: "new",
 }
 
-type EntryKind = "user" | "agent" | "system" | "error"
-
 function entryFg(kind: EntryKind): string {
   const c = COLORS()
   switch (kind) {
@@ -101,12 +100,21 @@ function entryFg(kind: EntryKind): string {
   }
 }
 
-type MainView = "review" | "tree" | "log" | "done"
+import type { CommandHandler, CommandContext, EntryKind, MainView } from "./commands/context"
 type PickerKind = "recent" | "found"
 interface PickerItem {
   path: string
   name: string
   kind: PickerKind
+}
+
+/** Commands whose handler lives in a module; the rest are still inline. */
+const HANDLERS: Record<string, CommandHandler> = {
+  help: helpCommand,
+  home: homeCommand,
+  run: runShellCommand,
+  themes: themesCommand,
+  quit: quitCommand,
 }
 
 const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
@@ -767,6 +775,75 @@ export function ReviewApp() {
     }
   }
 
+  /** Chdir into a project, remember it and load its review. */
+  function openProjectAt(path: string): string | undefined {
+    const root = openProject(path)
+    if (root === undefined) return undefined
+    const savedRoot = hasProject() ? cwd() : null
+    if (savedRoot !== null && savedRoot !== root) previousProject = savedRoot
+    const saved = loadSavedReviewSource(root)
+    if (saved) setReviewSource(saved)
+    setCwd(root)
+    setHasProject(true)
+    load()
+    setView("review")
+    return root
+  }
+
+  /** The narrow surface slash-command handlers are allowed to use. */
+  function buildCommandContext(args: string): CommandContext {
+    return {
+      args,
+      addEntry,
+      setStatus,
+      setView,
+      setPromptValue,
+      openMenu: () => setMenuOpen(true),
+      quit: () => {
+        renderer.destroy()
+        process.exit(0)
+      },
+      hasProject,
+      projectRoot: cwd,
+      files: () => files() ?? [],
+      openProjectAt,
+      previousProjectPath: () => previousProject,
+      refresh: load,
+      listProjects,
+      openTree: loadTree,
+      selectFile,
+      applyReviewSource: (source) => {
+        setReviewSourcePersist(source)
+        load()
+      },
+      restoreSavedReviewSource: (root) => {
+        const saved = loadSavedReviewSource(root)
+        if (saved) setReviewSource(saved)
+      },
+      openReviewPicker: () => {
+        setReviewPickerOpen(true)
+        setReviewPickerIndex(0)
+      },
+      sourceLabel,
+      highlights,
+      persistHighlights,
+      clearHighlights: () => {
+        saveHighlights([])
+        setHighlights([])
+        setResolvedHighlights(new Map())
+      },
+      isHighlightOutdated: (id) => resolvedHighlights().get(id) === null,
+      connectorId: connector,
+      model,
+      setConnector: (id, nextModel) => {
+        setConnector(id)
+        setModel(nextModel)
+      },
+      activeLabel,
+      connectorsStatus,
+    }
+  }
+
   function runCommand(line: string): void {
     if (line === "") {
       addEntry("system", HELP_TEXT)
@@ -802,14 +879,13 @@ export function ReviewApp() {
       setStatus(`corrected /${name} → /${def.name}`)
     }
 
+    const handler = HANDLERS[def.name]
+    if (handler) {
+      handler(buildCommandContext(rest))
+      return
+    }
+
     switch (def.name) {
-      case "help":
-        addEntry("system", HELP_TEXT)
-        setView("log")
-        return
-      case "home":
-        setMenuOpen(true)
-        return
       case "refresh": {
         if (!hasProject()) {
           addEntry("error", "No project open. Press Esc, then pick Pick another project.")
@@ -843,30 +919,6 @@ export function ReviewApp() {
         selectFile(index)
         // reset queue to all files? keep current queue
         setStatus(`→ ${list[index].path}`)
-        return
-      }
-      case "run": {
-        if (rest === "") {
-          addEntry("error", "usage: /run <command>")
-          setView("log")
-          return
-        }
-        setView("log")
-        addEntry("user", `/run ${rest}`)
-        try {
-          const argv = process.platform === "win32" ? ["cmd.exe", "/c", rest] : ["sh", "-c", rest]
-          const proc = Bun.spawnSync(argv, { cwd: cwd(), stdout: "pipe", stderr: "pipe" })
-          const stdout = proc.stdout.toString().trimEnd()
-          const stderr = proc.stderr.toString().trimEnd()
-          const combined = `${stdout}${stderr !== "" ? `\n${stderr}` : ""}`.trim()
-          addEntry(
-            proc.exitCode === 0 ? "system" : "error",
-            combined === "" ? "(no output)" : tailLines(combined, MAX_COMMAND_OUTPUT_LINES),
-          )
-          setStatus(proc.exitCode === 0 ? `✓ /run ${rest}` : `✗ /run exited with ${proc.exitCode}`)
-        } catch (error) {
-          addEntry("error", error instanceof Error ? error.message : String(error))
-        }
         return
       }
       case "cd": {
@@ -1278,38 +1330,6 @@ export function ReviewApp() {
           })
         return
       }
-      case "themes": {
-        const arg = rest.trim().toLowerCase()
-        if (arg === "") {
-          setPromptValue("/themes ")
-          return
-        }
-        // resolve name/alias
-        const aliases: Record<string, ThemeName> = {
-          default: "default",
-          dark: "dark-contrast",
-          "dark-contrast": "dark-contrast",
-          contrast: "dark-contrast",
-          white: "whiteout",
-          whiteout: "whiteout",
-          light: "whiteout",
-          github: "github",
-          gh: "github",
-        }
-        const resolved = aliases[arg]
-        if (!resolved) {
-          addEntry("error", `unknown theme "${rest}" — try: default, dark-contrast, whiteout, github`)
-          return
-        }
-        setTheme(resolved)
-        addEntry("system", `theme: ${THEME_LABELS[resolved]}`)
-        setStatus(`theme: ${THEME_LABELS[resolved]}`)
-        return
-      }
-      case "quit":
-        renderer.destroy()
-        process.exit(0)
-        return
       default:
         addEntry("error", `unknown command /${name} — try /help`)
         setView("log")
