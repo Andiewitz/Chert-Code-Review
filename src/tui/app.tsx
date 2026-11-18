@@ -1090,6 +1090,17 @@ export function ReviewApp() {
     void askAgent(raw)
   }
 
+  /** Diff rows for any changed file, not just the one currently on screen. */
+  function patchRowsFor(path: string): Row[] | undefined {
+    const target = (files() ?? []).find((f) => f.path === path)
+    if (target === undefined) return undefined
+    try {
+      return parsePatch(loadPatch(target, reviewSource()))
+    } catch {
+      return undefined
+    }
+  }
+
   async function askAgent(prompt: string): Promise<void> {
     addEntry("user", prompt)
     setLastQuestion(prompt)
@@ -1130,7 +1141,7 @@ export function ReviewApp() {
         const parsed = parseAgentHighlights(
           result,
           (files() ?? []).map((f) => f.path),
-          new Map((files() ?? []).map((f) => [f.path, codeRows()] as [string, any])),
+          patchRowsFor,
           highlights(),
         )
         if (parsed.highlights.length > 0) {
@@ -1173,7 +1184,7 @@ export function ReviewApp() {
       const parsed = parseAgentHighlights(
         result,
         (files() ?? []).map((f) => f.path),
-        new Map((files() ?? []).map((f) => [f.path, codeRows()] as [string, any])),
+        patchRowsFor,
         highlights(),
       )
       if (parsed.highlights.length > 0) {

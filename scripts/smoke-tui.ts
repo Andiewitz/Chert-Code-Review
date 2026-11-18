@@ -600,20 +600,21 @@ async function phaseETests(): Promise<void> {
 async function phaseFTests(): Promise<void> {
   // Pure parser unit test
   const { parseAgentHighlights } = await import("../src/highlights.ts")
-  const rows = new Map<string, any[]>()
-  rows.set("a.ts", [
-    { kind: "context", oldNo: 1, newNo: 1, text: "export const a = 1" },
-    { kind: "context", oldNo: 2, newNo: 2, text: "export const b = 2" },
-  ])
+  const rows: Record<string, any[]> = {
+    "a.ts": [
+      { kind: "context", oldNo: 1, newNo: 1, text: "export const a = 1" },
+      { kind: "context", oldNo: 2, newNo: 2, text: "export const b = 2" },
+    ],
+  }
   const ans =
     'Here is feedback.\n```chert-highlights\n[{"file":"a.ts","start":1,"end":2,"level":"high","note":"watch this"}]\n```'
-  const r = parseAgentHighlights(ans, ["a.ts"], rows, [])
+  const r = parseAgentHighlights(ans, ["a.ts"], (file) => rows[file], [])
   assert(r.highlights.length === 1, "phaseF parser creates 1 highlight")
   assert(r.cleanText.includes("Here is feedback"), "phaseF parser strips block from cleanText")
   assert(!r.cleanText.includes("chert-highlights"), "phaseF parser removes fenced block")
 
   // malformed JSON
-  const r2 = parseAgentHighlights("text\n```chert-highlights\n{bad}\n```", ["a.ts"], rows, [])
+  const r2 = parseAgentHighlights("text\n```chert-highlights\n{bad}\n```", ["a.ts"], (file) => rows[file], [])
   assert(r2.highlights.length === 0, "phaseF malformed JSON yields no highlights")
 
   if (process.platform === "win32") {

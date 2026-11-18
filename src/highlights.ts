@@ -200,7 +200,7 @@ const AGENT_BLOCK_RE = /```chert-highlights\s*\n([\s\S]*?)```/
 export function parseAgentHighlights(
   answerText: string,
   changedFiles: string[],
-  rowsByFile: Map<string, { kind: string; oldNo?: number; newNo?: number; text: string }[]>,
+  getRows: (file: string) => { kind: string; oldNo?: number; newNo?: number; text: string }[] | undefined,
   existing: Highlight[],
 ): AgentParseResult {
   const skipped: string[] = []
@@ -257,7 +257,7 @@ export function parseAgentHighlights(
       continue
     }
 
-    const rows = rowsByFile.get(file)
+    const rows = getRows(file)
     if (!rows) {
       skipped.push(`no rows for ${file}`)
       continue
