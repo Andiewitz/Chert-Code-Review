@@ -46,7 +46,6 @@ import type { ThemeName } from "./theme"
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
-import { mkdirSync, writeFileSync } from "node:fs"
 import { loadHighlights, saveHighlights, resolveHighlights } from "../highlights"
 import type { Highlight } from "../highlights"
 
@@ -79,13 +78,6 @@ function entryFg(kind: EntryKind): string {
 }
 
 import type { CommandHandler, CommandContext, EntryKind, MainView } from "./commands/context"
-type PickerKind = "recent" | "found"
-interface PickerItem {
-  path: string
-  name: string
-  kind: PickerKind
-}
-
 /** Commands whose handler lives in a module; the rest are still inline. */
 const HANDLERS: Record<string, CommandHandler> = {
   help: helpCommand,
@@ -129,7 +121,6 @@ export function ReviewApp() {
   const [treeLines, setTreeLines] = createSignal<TreeLine[]>([])
   const [treeIndex, setTreeIndex] = createSignal(0)
   const [view, setView] = createSignal<MainView>("review")
-  const [previousView, setPreviousView] = createSignal<"review" | "tree" | "log">("review")
   const [hasProject, setHasProject] = createSignal(initialRoot !== undefined)
   const [reviewSource, setReviewSource] = createSignal<ReviewSource>({ kind: "working" })
   const [branch, setBranch] = createSignal("no commits")
@@ -161,7 +152,6 @@ export function ReviewApp() {
   // Phase 4 answer state
   const [answerOpen, setAnswerOpen] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
-  const [scrollTarget, setScrollTarget] = createSignal<"diff" | "answer">("diff")
   const [lastQuestion, setLastQuestion] = createSignal("")
   const [lastAnswer, setLastAnswer] = createSignal("")
   const [answerFile, setAnswerFile] = createSignal("")
@@ -179,7 +169,6 @@ export function ReviewApp() {
   const [highlightNoteMode, setHighlightNoteMode] = createSignal(false)
   const [highlightNoteText, setHighlightNoteText] = createSignal("")
   const [pendingHighlight, setPendingHighlight] = createSignal<Highlight | null>(null)
-  const [highlightsClearPending, setHighlightsClearPending] = createSignal(false)
 
   const activeLabel = createMemo(() => {
     const active = connector()
@@ -221,13 +210,6 @@ export function ReviewApp() {
     const list = files()
     if (!list || list.length === 0) return undefined
     return list[Math.min(selected(), list.length - 1)]
-  })
-
-  const isLastFile = createMemo(() => {
-    const q = queue()
-    const cur = file()?.path
-    if (q.length === 0 || cur === undefined) return true
-    return q.indexOf(cur) === q.length - 1
   })
 
   const isFirstFile = createMemo(() => {
@@ -290,13 +272,6 @@ export function ReviewApp() {
     }
   }
 
-  const reviewInput = createMemo(() => {
-    const v = inputValue().trimStart()
-    const lower = v.toLowerCase()
-    if (!lower.startsWith("/review")) return null
-    return v.slice("/review".length).trimStart()
-  })
-
   const allReviewTargets = createMemo(() => {
     const items: Suggestion[] = []
     const targets: { key: string; description: string; insert: string }[] = [
@@ -315,14 +290,6 @@ export function ReviewApp() {
       }
     }
     return items
-  })
-
-  const reviewSuggestions = createMemo(() => {
-    const q = reviewInput()
-    if (q === null) return [] as Suggestion[]
-    const needle = q.toLowerCase()
-    const matches = (text: string) => needle === "" || text.toLowerCase().includes(needle)
-    return allReviewTargets().filter((s) => matches(s.label) || matches(s.description) || matches(s.key))
   })
 
   const themeInput = createMemo(() => {
@@ -1104,7 +1071,6 @@ export function ReviewApp() {
 
   function doneOptions(): SelectOption[] {
     const skippedCount = (files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length
-    const askedCount = (files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length
     const total = files()?.length ?? 0
     const opts: SelectOption[] = []
     if (skippedCount > 0)
@@ -1183,8 +1149,6 @@ export function ReviewApp() {
   createEffect(() => {
     const rows = codeRows()
     const hs = highlights().filter((h) => h.path === (file()?.path ?? ""))
-    const newSide = new Map<string, { startRow: number; endRow: number; moved: boolean } | null>()
-    const oldSide = new Map<string, { startRow: number; endRow: number; moved: boolean } | null>()
     // resolve for "new" side
     const newResolved = resolveHighlights(rows, "new", hs)
     const oldResolved = resolveHighlights(rows, "old", hs)
