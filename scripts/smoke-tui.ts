@@ -27,6 +27,27 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
+/**
+ * A fake `opencode` that answers a plain prompt the way `run --format json`
+ * does: one JSON event per line, text inside `part.text`, joined with newlines.
+ */
+function fakeOpencodeScript(parts: string[]): string {
+  const events = parts.map((text) =>
+    `  echo '${JSON.stringify({ type: "text", sessionID: "ses_fake", part: { type: "text", text } })}'`,
+  )
+  return [
+    "#!/bin/sh",
+    'if [ "$1" = "--version" ]; then echo "2.3.0"; exit 0; fi',
+    'if [ "$1" = "run" ]; then',
+    "  sleep 1",
+    ...events,
+    "  exit 0",
+    "fi",
+    "exit 0",
+    "",
+  ].join("\n")
+}
+
 async function phase1Tests(): Promise<void> {
   const { expandPath, resolveProjectRoot, openProject } = await import("../src/projects.ts")
 
@@ -278,10 +299,7 @@ async function phase4Tests(): Promise<void> {
   try {
     // fake opencode executable
     const script = join(binDir, "opencode")
-    writeFileSync(
-      script,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then exit 0; fi\nif [ "$1" = "run" ]; then\n  sleep 1\n  echo "answer line 1"\n  echo "answer line 2"\n  echo "answer line 3"\n  exit 0\nfi\nexit 0\n',
-    )
+    writeFileSync(script, fakeOpencodeScript(["answer line 1", "answer line 2", "answer line 3"]))
     const { chmodSync } = await import("node:fs")
     chmodSync(script, 0o755)
 
@@ -631,7 +649,12 @@ async function phaseFTests(): Promise<void> {
     const script = join(binDir, "opencode")
     writeFileSync(
       script,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then exit 0; fi\nif [ "$1" = "run" ]; then\n  sleep 1\n  printf \'%s\\n\' \'answer line 1\'\n  printf \'%s\\n\' \'```chert-highlights\'\n  printf \'%s\\n\' \'[{"file":"src/a.ts","start":1,"end":1,"level":"high","note":"ai note"}]\'\n  printf \'%s\\n\' \'```\'\n  exit 0\nfi\nexit 0\n',
+      fakeOpencodeScript([
+        "answer line 1",
+        "```chert-highlights",
+        '[{"file":"src/a.ts","start":1,"end":1,"level":"high","note":"ai note"}]',
+        "```",
+      ]),
     )
     const { chmodSync } = await import("node:fs")
     chmodSync(script, 0o755)

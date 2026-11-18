@@ -3,12 +3,17 @@
 // chert-highlights block out of the answer. The TUI owns all state; this module
 // only performs the call and reports what came back.
 
-import { opencodeAvailable, runAgent } from "../../agent"
 import { chatCompletion, findProvider, resolveKey } from "../../connectors"
 import type { ProviderDef } from "../../connectors"
 import { parseAgentHighlights } from "../../highlights"
 import type { Highlight } from "../../highlights"
 import { PROVIDERS } from "../../connectors"
+import { createOpencodeHarness } from "../../harness/opencode"
+import { MAX_AGENT_ANSWER_LINES } from "../../limits"
+import { tailLines } from "../../text"
+
+/** One adapter for the whole process, so detection is probed once. */
+const opencode = createOpencodeHarness()
 
 export interface AgentTurnRequest {
   prompt: string
@@ -58,10 +63,11 @@ export async function runAgentTurn(request: AgentTurnRequest): Promise<AgentTurn
   const { connectorId } = request
 
   if (connectorId === "opencode") {
-    if (!opencodeAvailable()) {
+    if (!opencode.detect().available) {
       return failed(noAiConnectedMessage(PROVIDERS[0]))
     }
-    return withParsedHighlights(await runAgent(request.prompt, request.projectRoot), request)
+    const answer = await opencode.askOnce(request.projectRoot, request.prompt)
+    return withParsedHighlights(tailLines(answer.trim(), MAX_AGENT_ANSWER_LINES), request)
   }
 
   const provider = findProvider(connectorId)
