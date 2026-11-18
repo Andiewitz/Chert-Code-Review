@@ -33,6 +33,7 @@ import {
   saveProviderKey,
   setActive,
 } from "../connectors"
+import type { ProviderDef } from "../connectors"
 import {
   displayPath,
   enterProject,
@@ -461,6 +462,11 @@ interface PickerItem {
 }
 
 const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
+
+/** The single wording used whenever there is no usable AI connection. */
+function noAiConnectedMessage(provider: ProviderDef): string {
+  return `No AI is connected yet. Easiest: get a free key at ${provider.keyUrl}, then type /connect ${provider.id} YOUR_KEY and then /use ${provider.id}.`
+}
 
 export function ReviewApp() {
   const renderer = useRenderer()
@@ -1088,34 +1094,21 @@ export function ReviewApp() {
     setAnswerIsError(false)
     const startedAt = Date.now()
     let statusPrefix = "Thinking… "
-    setStatus("Thinking… 0s")
-    let interval: ReturnType<typeof setInterval> | undefined
-    interval = setInterval(() => {
-      setStatus(`${statusPrefix}${Math.floor((Date.now() - startedAt) / 1000)}s`)
-    }, 1000)
-    const clearTimer = () => {
-      if (interval !== undefined) {
-        clearInterval(interval)
-        interval = undefined
-      }
-    }
-    // Request cancelling is not implemented yet (comes later).
+    // The prefix changes once a provider is known; the ticker reads it live.
+    const tick = () => setStatus(`${statusPrefix}${Math.floor((Date.now() - startedAt) / 1000)}s`)
+    tick()
+    const interval = setInterval(tick, 1000)
+    // There is no cancel affordance yet; request timeouts are the backstop.
     try {
       const active = connector()
       if (active === "opencode") {
         if (!opencodeAvailable()) {
-          const msg =
-            "No AI is connected yet. Easiest: get a free key at https://openrouter.ai/keys, then type /connect openrouter YOUR_KEY and then /use openrouter."
-          // build from PROVIDERS for the first available url
-          const prov = PROVIDERS[0]
-          const better = `No AI is connected yet. Easiest: get a free key at ${prov.keyUrl}, then type /connect ${prov.id} YOUR_KEY and then /use ${prov.id}.`
-          addEntry("error", better)
-          setLastAnswer(better)
+          const message = noAiConnectedMessage(PROVIDERS[0])
+          addEntry("error", message)
+          setLastAnswer(message)
           setAnswerIsError(true)
           return
         }
-        statusPrefix = "Thinking… "
-        setStatus("Thinking… 0s")
         const result = await runAgent(prompt, cwd())
         const parsed = parseAgentHighlights(
           result,
@@ -1149,15 +1142,15 @@ export function ReviewApp() {
       }
       const key = resolveKey(provider.id)
       if (key === undefined) {
-        const msg = `No AI is connected yet. Easiest: get a free key at ${provider.keyUrl}, then type /connect ${provider.id} YOUR_KEY and then /use ${provider.id}.`
-        addEntry("error", msg)
-        setLastAnswer(msg)
+        const message = noAiConnectedMessage(provider)
+        addEntry("error", message)
+        setLastAnswer(message)
         setAnswerIsError(true)
         return
       }
       const useModel = model() ?? provider.defaultModel
       statusPrefix = `${provider.id} ${useModel}: Thinking… `
-      setStatus(`${statusPrefix}0s`)
+      tick()
       const system = `You are chert's code-review assistant. Current project directory: ${cwd()}. Locally changed files: ${(files() ?? []).map((f) => f.path).join(", ") || "none"}.`
       const result = await chatCompletion(provider, key, useModel, system, prompt)
       const parsed = parseAgentHighlights(
@@ -1186,7 +1179,7 @@ export function ReviewApp() {
       setLastAnswer(msg)
       setAnswerIsError(true)
     } finally {
-      clearTimer()
+      clearInterval(interval)
       setBusy(false)
       const v = view()
       if (v === "review") {
