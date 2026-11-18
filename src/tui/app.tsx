@@ -45,6 +45,7 @@ import {
   resolveProject,
   resolveProjectRoot,
 } from "../projects"
+import { bestEffort } from "../best-effort"
 import { configDir, readJson, writeJsonAtomic } from "../config"
 import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
 import { tailLines } from "../text"
@@ -158,11 +159,8 @@ function loadThemeName(): ThemeName {
 }
 
 function saveThemeName(name: ThemeName): void {
-  try {
-    writeJsonAtomic(join(configDir(), "theme.json"), { theme: name })
-  } catch {
-    // a read-only config directory must not break the TUI
-  }
+  // A read-only config directory must not break the TUI.
+  bestEffort("persist theme", () => writeJsonAtomic(join(configDir(), "theme.json"), { theme: name }))
 }
 
 const [themeName, setThemeNameSignal] = createSignal<ThemeName>(loadThemeName())
@@ -747,11 +745,7 @@ export function ReviewApp() {
   }
   function setReviewSourcePersist(src: ReviewSource): void {
     setReviewSource(src)
-    try {
-      saveReviewSource(cwd(), src)
-    } catch {
-      /* ignore */
-    }
+    bestEffort("persist review source", () => saveReviewSource(cwd(), src))
   }
 
   // Synchronous loads
@@ -764,26 +758,20 @@ export function ReviewApp() {
     setSelected(0)
     // before overwriting, compute reviewed files that changed
     let unChecked = 0
-    try {
+    // Reconciliation is informational: failing it only loses the
+    // "reviewed files changed" warning.
+    bestEffort("reconcile reviewed files", () => {
       const oldSet = reviewed()
       const newFiles = listChangedFiles(reviewSource())
       for (const k of oldSet) {
         const [path, oldHash] = k.split("\u0000")
         const f = newFiles.find((x) => x.path === path)
         if (f) {
-          // compute new hash from patch (load patch)
-          try {
-            const p = loadPatch(f, reviewSource())
-            const newHash = String(Bun.hash(p))
-            if (newHash !== oldHash) unChecked++
-          } catch {
-            /* ignore */
-          }
+          const p = loadPatch(f, reviewSource())
+          if (String(Bun.hash(p)) !== oldHash) unChecked++
         }
       }
-    } catch {
-      /* ignore */
-    }
+    })
     setQueue([])
     setFileMemory(new Map())
     setAction(3)
@@ -796,6 +784,8 @@ export function ReviewApp() {
     try {
       setHighlights(loadHighlights())
       setFiles(listChangedFiles(reviewSource()))
+      // currentBranch() already reports "no commits" for a HEAD-less repo;
+      // this catch only covers a git layer that throws instead.
       try {
         setBranch(currentBranch())
       } catch {
@@ -806,19 +796,15 @@ export function ReviewApp() {
       setBranch("no commits")
     }
     selectFile(0)
-    try {
-      const list = files()
-      if (list) setQueue(list.map((f) => f.path))
-    } catch {
-      setQueue([])
-    }
+    const list = files()
+    setQueue(list ? list.map((f) => f.path) : [])
     if (view() === "tree") {
-      try {
+      // A failed rebuild leaves the previous tree on screen; refreshing again
+      // is one keypress away.
+      bestEffort("refresh tree", () => {
         setTreeLines(buildTreeLines(changedGlyphs()))
         setTreeIndex(0)
-      } catch {
-        // leave stale
-      }
+      })
     }
   }
 
@@ -827,11 +813,7 @@ export function ReviewApp() {
     if (!list || list.length === 0) return
     const i = Math.max(0, Math.min(index, list.length - 1))
     setSelected(i)
-    try {
-      fileScrollRef?.scrollTo({ x: 0, y: Math.max(0, i - 6) })
-    } catch {
-      /* ignore */
-    }
+    bestEffort("scroll fileScrollRef", () => fileScrollRef?.scrollTo({ x: 0, y: Math.max(0, i - 6) }))
     const current = list[i]
     if (patchFor === current.path) {
       setAction(3)
@@ -842,11 +824,7 @@ export function ReviewApp() {
       setPatch(cached)
       patchFor = current.path
       setAction(3)
-      try {
-        diffScrollRef?.scrollTo({ x: 0, y: 0 })
-      } catch {
-        /* ignore */
-      }
+      bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
       return
     }
     try {
@@ -860,11 +838,7 @@ export function ReviewApp() {
       )
     }
     setAction(3)
-    try {
-      diffScrollRef?.scrollTo({ x: 0, y: 0 })
-    } catch {
-      /* ignore */
-    }
+    bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
   }
 
   function navigate(delta: number): void {
@@ -1070,6 +1044,7 @@ export function ReviewApp() {
     try {
       return parsePatch(loadPatch(target, reviewSource()))
     } catch {
+      // The caller reports the file in its skipped list.
       return undefined
     }
   }
@@ -1748,11 +1723,9 @@ export function ReviewApp() {
         const dir = key.name === "up" ? -1 : 1
         setReviewPickerIndex((i) => {
           const next = Math.max(0, Math.min(i + dir, Math.max(0, items.length - 1)))
-          try {
-            reviewPickerScrollRef?.scrollTo({ x: 0, y: Math.max(0, next - 6) })
-          } catch {
-            /* ignore */
-          }
+          bestEffort("scroll reviewPickerScrollRef", () =>
+            reviewPickerScrollRef?.scrollTo({ x: 0, y: Math.max(0, next - 6) }),
+          )
           return next
         })
         return
@@ -2126,11 +2099,9 @@ export function ReviewApp() {
             const first = codeRows().findIndex((r) => r.kind !== "meta")
             const row = first === -1 ? 0 : first
             setCodeCursor(row)
-            try {
-              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, row - 3) })
-            } catch {
-              /* ignore */
-            }
+            bestEffort("scroll codeScrollRef", () =>
+              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, row - 3) }),
+            )
           }
           return
         }
@@ -2160,11 +2131,9 @@ export function ReviewApp() {
             const dir = key.name === "up" ? -1 : 1
             setCodeCursor((c) => Math.max(0, Math.min(c + dir, rows.length - 1)))
             // auto-scroll
-            try {
-              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, codeCursor() - 5) })
-            } catch {
-              /* ignore */
-            }
+            bestEffort("scroll codeScrollRef", () =>
+              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, codeCursor() - 5) }),
+            )
             return
           }
           if (key.name === "pageup" || key.name === "pagedown") {
@@ -2172,11 +2141,9 @@ export function ReviewApp() {
             const delta = key.name === "pageup" ? -10 : 10
             const rows = codeRows()
             setCodeCursor((c) => Math.max(0, Math.min(c + delta, rows.length - 1)))
-            try {
-              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, codeCursor() - 5) })
-            } catch {
-              /* ignore */
-            }
+            bestEffort("scroll codeScrollRef", () =>
+              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, codeCursor() - 5) }),
+            )
             return
           }
         }
@@ -2232,11 +2199,9 @@ export function ReviewApp() {
           const dir = key.name === "up" ? -1 : 1
           setAllFilesIndex((i) => {
             const next = Math.max(0, Math.min(i + dir, (files()?.length ?? 1) - 1))
-            try {
-              allFilesScrollRef?.scrollTo({ x: 0, y: Math.max(0, next - 6) })
-            } catch {
-              /* ignore */
-            }
+            bestEffort("scroll allFilesScrollRef", () =>
+              allFilesScrollRef?.scrollTo({ x: 0, y: Math.max(0, next - 6) }),
+            )
             return next
           })
           return
@@ -2438,11 +2403,7 @@ export function ReviewApp() {
   createEffect(() => {
     patch()
     setTimeout(() => {
-      try {
-        diffScrollRef?.scrollTo({ x: 0, y: 0 })
-      } catch {
-        /* ignore */
-      }
+      bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
     }, 50)
   })
 
@@ -2464,11 +2425,7 @@ export function ReviewApp() {
   // Reset diff scroll to top whenever the displayed patch changes.
   createEffect(() => {
     patch()
-    try {
-      diffScrollRef?.scrollTo({ x: 0, y: 0 })
-    } catch {
-      /* ignore */
-    }
+    bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
   })
 
   const filetype = createMemo(() => {
@@ -3058,11 +3015,9 @@ export function ReviewApp() {
 }
 
 export async function launch(startDir?: string): Promise<void> {
-  try {
-    openProject(startDir ?? process.cwd())
-  } catch {
-    // ignore
-  }
+  // A failure here leaves the home screen up, which is the correct fallback.
+  bestEffort("open initial project", () => openProject(startDir ?? process.cwd()))
+  // Syntax highlighting is a nicety; the TUI works without tree-sitter.
   await getTreeSitterClient()
     .initialize()
     .catch(() => {})
