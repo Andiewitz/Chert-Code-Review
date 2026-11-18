@@ -455,7 +455,7 @@ async function phaseBTests(): Promise<void> {
 
 async function phaseCTests(): Promise<void> {
   // allowlist test
-  const { run } = await import("../src/git.ts")
+  const { run } = await import("../src/git")
   const threw = tryOr(() => {
     run(process.cwd(), ["commit", "-m", "x"])
     return false
