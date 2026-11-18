@@ -301,8 +301,7 @@ async function phase4Tests(): Promise<void> {
       let frame = setup.captureCharFrame();
       assert(frame.includes("a2") || frame.includes("addedByTest"), "phase4 diff text on screen initially");
 
-      // ask via "Is it slow?" button (highlight index 1)
-      await setup.mockInput.pressArrow("left");
+      // ask via "Is it messy?" button (highlight index 1)
       await setup.mockInput.pressArrow("left");
       await setup.mockInput.pressArrow("left");
       await setup.renderOnce();
@@ -312,7 +311,6 @@ async function phase4Tests(): Promise<void> {
       assert(frame.includes("Thinking"), "phase4 shows thinking state in pane");
       assert(frame.includes("a2") || frame.includes("addedByTest"), "phase4 diff text stays on screen");
       // busy: submit another prompt -> rejected
-      await setup.mockInput.pressArrow("left");
       await setup.mockInput.pressArrow("left");
       await setup.mockInput.pressArrow("left");
       await setup.renderOnce();
@@ -386,7 +384,7 @@ async function phaseBTests(): Promise<void> {
     try {
       await setup.renderOnce();
       let frame = setup.captureCharFrame();
-      assert(frame.includes("No project open"), "phaseB empty start state");
+      assert(frame.includes("Recent projects"), "phaseB empty start state");
 
       // /cd alpha opens it
       await setup.mockInput.pressKeys("/cd alpha".split(""));
@@ -632,8 +630,7 @@ async function phaseFTests(): Promise<void> {
     const setup = await render(ReviewApp, { width: 100, height: 30 });
     try {
       await setup.renderOnce();
-      // action bar starts on Next; Left ×3 reaches "Is it slow?", Enter runs it
-      await setup.mockInput.pressArrow("left");
+      // action bar starts on Next; Left ×2 reaches "Is it messy?", Enter runs it
       await setup.mockInput.pressArrow("left");
       await setup.mockInput.pressArrow("left");
       await setup.renderOnce();

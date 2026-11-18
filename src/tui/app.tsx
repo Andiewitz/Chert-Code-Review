@@ -194,25 +194,10 @@ function RowList(props: { rows: () => PickerRow[]; index: () => number }) {
   )
 }
 
-/** Launch/home screen: the chert wordmark above a recent-project picker. */
-function HomeScreen(props: { recents: () => Array<{ path: string }>; index: () => number; noProject: boolean }) {
+/** Launch/home screen: recent projects below the wordmark and prompt. */
+function HomeScreen(props: { recents: () => Array<{ path: string }>; index: () => number }) {
   return (
-    <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-      <box height={1} flexShrink={0} />
-      <For each={WORDMARK}>
-        {(line, i) => (
-          <text fg={WORDMARK_FG[i()] ?? COLORS().purple} attributes={ATTR.bold}>
-            {line}
-          </text>
-        )}
-      </For>
-      <box height={1} flexShrink={0} />
-      <text fg={COLORS().dim}>{"review your changes, one file at a time"}</text>
-      <box height={1} flexShrink={0} />
-      <Show when={props.noProject}>
-        <text fg={COLORS().dim} attributes={ATTR.dim}>{"No project open · choose a recent project, or type /cd <path>"}</text>
-        <box height={1} flexShrink={0} />
-      </Show>
+    <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1}>
       <text fg={COLORS().purple} attributes={ATTR.bold}>{"Recent projects"}</text>
       <box height={1} flexShrink={0} />
       <Show
@@ -373,7 +358,7 @@ interface PickerItem {
   kind: PickerKind
 }
 
-const ACTION_ITEMS = ["Back", "Is it slow?", "Is it messy?", "Is it safe?", "Next"]
+const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
 
 export function ReviewApp() {
   const renderer = useRenderer()
@@ -408,7 +393,7 @@ export function ReviewApp() {
   let previousProject: string | null = null
 
   // Phase 3 guided review state
-  const [action, setAction] = createSignal(4)
+  const [action, setAction] = createSignal(3)
   const [queue, setQueue] = createSignal<string[]>([])
   const [fileMemory, setFileMemory] = createSignal(new Map<string, "asked" | "passed">())
   const [menuOpen, setMenuOpen] = createSignal(false)
@@ -468,10 +453,10 @@ export function ReviewApp() {
   const patchCache = new Map<string, string>()
   let patchFor = ""
   let diffScrollRef: ScrollBoxRenderable | undefined
+  let inputRef: InputRenderable | undefined
   let codeScrollRef: ScrollBoxRenderable | undefined
   let answerScrollRef: ScrollBoxRenderable | undefined
   let diffRef: any
-  let inputRef: InputRenderable | undefined
   let logRef: ScrollBoxRenderable | undefined
   let treeRef: ScrollBoxRenderable | undefined
   let fileScrollRef: ScrollBoxRenderable | undefined
@@ -699,7 +684,7 @@ export function ReviewApp() {
     } catch { /* ignore */ }
     setQueue([])
     setFileMemory(new Map())
-    setAction(4)
+    setAction(3)
     setMenuOpen(false)
     if (unChecked > 0) setStatus(`${unChecked} reviewed files changed and were un-checked`)
     setAllFilesOpen(false)
@@ -743,14 +728,14 @@ export function ReviewApp() {
     try { fileScrollRef?.scrollTo({ x: 0, y: Math.max(0, i - 6) }) } catch { /* ignore */ }
     const current = list[i]
     if (patchFor === current.path) {
-      setAction(4)
+      setAction(3)
       return
     }
     const cached = patchCache.get(current.path)
     if (cached !== undefined) {
       setPatch(cached)
       patchFor = current.path
-      setAction(4)
+      setAction(3)
       try { diffScrollRef?.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ }
       return
     }
@@ -762,7 +747,7 @@ export function ReviewApp() {
     } catch (error) {
       setPatch(`Error loading diff for ${current.path}: ${error instanceof Error ? error.message : String(error)}`)
     }
-    setAction(4)
+    setAction(3)
     try { diffScrollRef?.scrollTo({ x: 0, y: 0 }) } catch { /* ignore */ }
   }
 
@@ -818,7 +803,7 @@ export function ReviewApp() {
     const list = files() ?? []
     const idx = list.findIndex((f) => f.path === path)
     if (idx !== -1) selectFile(idx)
-    setAction(4)
+    setAction(3)
     if (answerFile() !== path) setAnswerOpen(false)
   }
 
@@ -949,7 +934,7 @@ export function ReviewApp() {
     }
     const cur = file()?.path
     if (cur) markAsked(cur)
-    setAction(4)
+    setAction(3)
     void askAgent(raw)
   }
 
@@ -1044,7 +1029,7 @@ export function ReviewApp() {
       if (v === "review") {
         setAnswerFile(file()?.path ?? "")
         setAnswerOpen(true)
-        setAction(4)
+        setAction(3)
         setStatus("")
       } else if (v === "tree") {
         setStatus("answer ready, press a in review")
@@ -2103,25 +2088,18 @@ export function ReviewApp() {
     if (i === 1) {
       if (busy()) { setStatus("Still thinking about your last question."); return }
       markAsked(cur)
-      setAction(4)
-      void askAgent(QUESTIONS.slow(cur))
+      setAction(3)
+      void askAgent(QUESTIONS.messy(cur))
       return
     }
     if (i === 2) {
       if (busy()) { setStatus("Still thinking about your last question."); return }
       markAsked(cur)
-      setAction(4)
-      void askAgent(QUESTIONS.messy(cur))
-      return
-    }
-    if (i === 3) {
-      if (busy()) { setStatus("Still thinking about your last question."); return }
-      markAsked(cur)
-      setAction(4)
+      setAction(3)
       void askAgent(QUESTIONS.safe(cur))
       return
     }
-    if (i === 4) {
+    if (i === 3) {
       nextFile()
       return
     }
@@ -2256,12 +2234,113 @@ export function ReviewApp() {
         </text>
       </box>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
+      <Show when={!hasProject()}>
+        <box flexShrink={0} flexDirection="column" paddingLeft={2} paddingRight={2}>
+          <box height={1} flexShrink={0} />
+          <For each={WORDMARK}>
+            {(line, i) => (
+              <text fg={WORDMARK_FG[i()] ?? COLORS().purple} attributes={ATTR.bold}>
+                {line}
+              </text>
+            )}
+          </For>
+          <box height={1} flexShrink={0} />
+          <text fg={COLORS().dim}>{"review your changes, one file at a time"}</text>
+          <box height={1} flexShrink={0} />
+        </box>
+      </Show>
+      <Show when={hasProject() && answerOpen() && answerFile() === (file()?.path ?? "")}>
+        <box height="35%" border={["bottom"]} borderColor={COLORS().rule} flexDirection="column" paddingLeft={1}>
+          <text fg={COLORS().dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "\u2026" : lastQuestion()}  \u00b7  ${activeLabel()}`}</text>
+          <scrollbox
+            ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
+            flexGrow={1}
+            backgroundColor={COLORS().bg}
+          >
+            <text wrapMode="word" fg={busy() ? COLORS().dim : (answerIsError() ? COLORS().danger : COLORS().text)}>{busy() ? status() : lastAnswer()}</text>
+          </scrollbox>
+        </box>
+      </Show>
+      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+        <text fg={COLORS().purple} attributes={ATTR.bold}>{"> "}</text>
+        <input
+          ref={(el: InputRenderable) => {
+            inputRef = el
+            el.focus()
+          }}
+          flexGrow={1}
+          backgroundColor={COLORS().bg}
+          focusedBackgroundColor={COLORS().bg}
+          textColor={COLORS().bright}
+          focusedTextColor={COLORS().bright}
+          placeholder={hasProject() ? "ask a question, or type / for commands" : "open a project with /cd <path>, or press Esc"}
+          placeholderColor={COLORS().dim}
+          onInput={(value: string) => setInputValue(value)}
+        />
+      </box>
+      <Show
+        when={suggestionWindow().show}
+        fallback={<box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />}
+      >
+        <box flexShrink={0} flexDirection="column" border={["bottom"]} borderColor={COLORS().rule} paddingLeft={1} paddingRight={1}>
+          <Show when={pickerOpen()}>
+            <text fg={COLORS().dim}> commands (Ctrl+P)</text>
+          </Show>
+          <For each={suggestionWindow().items}>
+            {(cmd, i) => {
+              const idx = () => suggestionWindow().offset + i()
+              const active = () => idx() === Math.min(suggestionIndex(), Math.max(0, visibleSuggestions().length - 1))
+              const pal = () => (themeInput() !== null ? THEMES[cmd.key as ThemeName] : null)
+              const bg = () => pal() ? (active() ? pal()!.selectedBg : pal()!.bg) : (active() ? COLORS().selectedBg : COLORS().bg)
+              const labelFg = () => pal() ? (active() ? pal()!.bright : pal()!.accent) : (active() ? COLORS().bright : COLORS().accent)
+              const descFg = () => pal() ? (active() ? pal()!.text : pal()!.dim) : (active() ? COLORS().text : COLORS().dim)
+              return (
+                <box height={1} flexDirection="row" backgroundColor={bg()}>
+                  <text fg={labelFg()}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
+                  <text fg={descFg()}>{cmd.description}</text>
+                </box>
+              )
+            }}
+          </For>
+        </box>
+      </Show>
+      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+        <Show when={busy()} fallback={
+          <>
+            <text fg={COLORS().dim} attributes={ATTR.dim}>{footerHints()}</text>
+            <box flexGrow={1} />
+            <Show when={status() !== ""}>
+              <text fg={COLORS().purpleBright} attributes={ATTR.dim}>{status()}</text>
+            </Show>
+          </>
+        }>
+          <text fg={COLORS().purple} attributes={ATTR.dim}>{`${status()} · Ctrl+C quit`}</text>
+        </Show>
+      </box>
+      <Show when={hasProject() && view() === "review" && !menuOpen() && !allFilesOpen() && !projectsOpen()}>
+        <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+          <For each={ACTION_ITEMS}>
+            {(label, i) => (
+              <text
+                fg={i() === action() ? COLORS().bg : COLORS().dim}
+                bg={i() === action() ? COLORS().purple : undefined}
+                attributes={i() === action() ? ATTR.bold : ATTR.none}
+              >{` ${label} `}</text>
+            )}
+          </For>
+          <box flexGrow={1} />
+          <Show when={focus() === "code"}>
+            <text fg={COLORS().purple} attributes={ATTR.dim}>{"highlight mode · Esc to leave"}</text>
+          </Show>
+        </box>
+      </Show>
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
 
       <Show when={view() === "done"} fallback={
         <Show when={view() === "log"} fallback={
           <Show when={view() === "tree"} fallback={
             <Show when={mainVisible()}>
-              <Show when={hasProject()} fallback={<HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} noProject={true} />}>
+              <Show when={hasProject()} fallback={<HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} />}>
                 <box flexGrow={1} flexDirection="row">
                   <box width="32%" flexDirection="column" border={["right"]} borderColor={COLORS().rule}>
                     <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1} flexDirection="row">
@@ -2335,18 +2414,6 @@ export function ReviewApp() {
                         }}
                       </For>
                     </scrollbox>
-                    <Show when={answerOpen() && answerFile() === (file()?.path ?? "")}>
-                      <box height="35%" border={["top"]} borderColor={COLORS().rule} flexDirection="column" paddingLeft={1}>
-                        <text fg={COLORS().dim}>{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "\u2026" : lastQuestion()}  \u00b7  ${activeLabel()}`}</text>
-                        <scrollbox
-                          ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
-                          flexGrow={1}
-                          backgroundColor={COLORS().bg}
-                        >
-                          <text wrapMode="word" fg={busy() ? COLORS().dim : (answerIsError() ? COLORS().danger : COLORS().text)}>{busy() ? status() : lastAnswer()}</text>
-                        </scrollbox>
-                      </box>
-                    </Show>
                   </box>
                 </box>
               </Show>
@@ -2461,34 +2528,7 @@ export function ReviewApp() {
       </Show>
 
       <Show when={projectsOpen()}>
-        <HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} noProject={false} />
-      </Show>
-
-      <Show
-        when={suggestionWindow().show}
-        fallback={<box height={1} flexShrink={0} border={["top"]} borderColor={COLORS().rule} />}
-      >
-        <box flexShrink={0} flexDirection="column" border={["top"]} borderColor={COLORS().rule} paddingLeft={1} paddingRight={1}>
-          <Show when={pickerOpen()}>
-            <text fg={COLORS().dim}> commands (Ctrl+P)</text>
-          </Show>
-          <For each={suggestionWindow().items}>
-            {(cmd, i) => {
-              const idx = () => suggestionWindow().offset + i()
-              const active = () => idx() === Math.min(suggestionIndex(), Math.max(0, visibleSuggestions().length - 1))
-              const pal = () => (themeInput() !== null ? THEMES[cmd.key as ThemeName] : null)
-              const bg = () => pal() ? (active() ? pal()!.selectedBg : pal()!.bg) : (active() ? COLORS().selectedBg : COLORS().bg)
-              const labelFg = () => pal() ? (active() ? pal()!.bright : pal()!.accent) : (active() ? COLORS().bright : COLORS().accent)
-              const descFg = () => pal() ? (active() ? pal()!.text : pal()!.dim) : (active() ? COLORS().text : COLORS().dim)
-              return (
-                <box height={1} flexDirection="row" backgroundColor={bg()}>
-                  <text fg={labelFg()}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
-                  <text fg={descFg()}>{cmd.description}</text>
-                </box>
-              )
-            }}
-          </For>
-        </box>
+        <HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} />
       </Show>
 
       <Show when={cdMatches() !== null}>
@@ -2505,54 +2545,6 @@ export function ReviewApp() {
           <text fg={COLORS().purpleBright} attributes={ATTR.dim}>{noteStrip()}</text>
         </box>
       </Show>
-      <Show when={hasProject() && view() === "review" && !menuOpen() && !allFilesOpen() && !projectsOpen()}>
-        <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-          <For each={ACTION_ITEMS}>
-            {(label, i) => (
-              <text
-                fg={i() === action() ? COLORS().bg : COLORS().dim}
-                bg={i() === action() ? COLORS().purple : undefined}
-                attributes={i() === action() ? ATTR.bold : ATTR.none}
-              >{` ${label} `}</text>
-            )}
-          </For>
-          <box flexGrow={1} />
-          <Show when={focus() === "code"}>
-            <text fg={COLORS().purple} attributes={ATTR.dim}>{"highlight mode · Esc to leave"}</text>
-          </Show>
-        </box>
-      </Show>
-      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={COLORS().purple} attributes={ATTR.bold}>{"> "}</text>
-        <input
-          ref={(el: InputRenderable) => {
-            inputRef = el
-            el.focus()
-          }}
-          flexGrow={1}
-          backgroundColor={COLORS().bg}
-          focusedBackgroundColor={COLORS().bg}
-          textColor={COLORS().bright}
-          focusedTextColor={COLORS().bright}
-          placeholder={hasProject() ? "ask a question, or type / for commands" : "open a project with /cd <path>, or press Esc"}
-          placeholderColor={COLORS().dim}
-          onInput={(value: string) => setInputValue(value)}
-        />
-      </box>
-      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
-      <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <Show when={busy()} fallback={
-          <>
-            <text fg={COLORS().dim} attributes={ATTR.dim}>{footerHints()}</text>
-            <box flexGrow={1} />
-            <Show when={status() !== ""}>
-              <text fg={COLORS().purpleBright} attributes={ATTR.dim}>{status()}</text>
-            </Show>
-          </>
-        }>
-          <text fg={COLORS().purple} attributes={ATTR.dim}>{`${status()} · Ctrl+C quit`}</text>
-        </Show>
-      </box>
     </box>
   )
 }

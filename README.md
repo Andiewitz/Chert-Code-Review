@@ -27,12 +27,12 @@ Keys inside the TUI:
 No modes: if the prompt box is empty, keys control the screen; if it has text,
 typing and Enter go to the text.
 
-Review screen (the action bar at the bottom is always visible):
+Review screen (the prompt and action bar stay at the top, above the files):
 
 | key | action |
 |---|---|
 | `Up` / `Down` | previous / next file |
-| `Left` / `Right` | move across the action bar: Back · Is it slow? · Is it messy? · Is it safe? · Next |
+| `Left` / `Right` | move across the action bar: Back · Is it messy? · Is it safe? · Next |
 | `Enter` | run the highlighted action |
 | `Space` | mark the file reviewed |
 | `h` | highlight mode: `↑↓` moves the line cursor, `Enter` selects a line or range, `Esc` leaves |
