@@ -78,3 +78,76 @@ describe("untracked files", () => {
     expect(loadPatch(file!)).toContain("+one\n+two")
   })
 })
+
+function git(repo: string, args: string[]): string {
+  const proc = Bun.spawnSync(["git", ...args], { cwd: repo })
+  if (proc.exitCode !== 0) throw new Error(proc.stderr.toString())
+  return proc.stdout.toString()
+}
+
+function commitAll(repo: string, message: string): void {
+  git(repo, ["add", "."])
+  git(repo, ["commit", "-q", "-m", message])
+}
+
+describe("listChangedFiles / loadPatch", () => {
+  test("lists modified, deleted and untracked files together", () => {
+    const repo = tempRepo()
+    writeFileSync(join(repo, "keep.ts"), "one\ntwo\n")
+    writeFileSync(join(repo, "gone.ts"), "bye\n")
+    commitAll(repo, "files")
+
+    writeFileSync(join(repo, "keep.ts"), "one\ntwo\nthree\n")
+    rmSync(join(repo, "gone.ts"))
+    writeFileSync(join(repo, "new.ts"), "fresh\n")
+
+    const files = listChangedFiles()
+    expect(files.map((file) => [file.path, file.status])).toEqual([
+      ["gone.ts", "deleted"],
+      ["keep.ts", "modified"],
+      ["new.ts", "untracked"],
+    ])
+    expect(files.find((file) => file.path === "keep.ts")).toMatchObject({ additions: 1, deletions: 0 })
+    expect(files.find((file) => file.path === "gone.ts")).toMatchObject({ additions: 0, deletions: 1 })
+
+    expect(loadPatch(files.find((file) => file.path === "keep.ts")!)).toContain("+three")
+    expect(loadPatch(files.find((file) => file.path === "new.ts")!)).toContain("+fresh")
+  })
+
+  test("staged review only contains staged changes", () => {
+    const repo = tempRepo()
+    writeFileSync(join(repo, "a.ts"), "a\n")
+    writeFileSync(join(repo, "b.ts"), "b\n")
+    commitAll(repo, "files")
+    writeFileSync(join(repo, "a.ts"), "a\nstaged\n")
+    writeFileSync(join(repo, "b.ts"), "b\nunstaged\n")
+    git(repo, ["add", "a.ts"])
+
+    expect(listChangedFiles({ kind: "staged" }).map((file) => file.path)).toEqual(["a.ts"])
+    expect(listChangedFiles().map((file) => file.path)).toEqual(["a.ts", "b.ts"])
+  })
+
+  test("a repository without HEAD reviews untracked files only", () => {
+    const repo = mkdtempSync(join(tmpdir(), "chert-git-empty-"))
+    repos.push(repo)
+    git(repo, ["init", "-q"])
+    process.chdir(repo)
+    writeFileSync(join(repo, "first.ts"), "line one\n")
+
+    const files = listChangedFiles()
+    expect(files.map((file) => file.status)).toEqual(["untracked"])
+    expect(loadPatch(files[0])).toContain("+line one")
+  })
+
+  test("commit review compares against the parent", () => {
+    const repo = tempRepo()
+    writeFileSync(join(repo, "a.ts"), "a\n")
+    commitAll(repo, "add a")
+    const sha = git(repo, ["rev-parse", "HEAD"]).trim()
+    const parent = git(repo, ["rev-parse", "HEAD^"]).trim()
+
+    const files = listChangedFiles({ kind: "commit", sha, parent, subject: "add a" })
+    expect(files.map((file) => [file.path, file.status])).toEqual([["a.ts", "added"]])
+    expect(loadPatch(files[0], { kind: "commit", sha, parent, subject: "add a" })).toContain("+a")
+  })
+})

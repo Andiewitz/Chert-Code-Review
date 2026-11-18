@@ -156,46 +156,34 @@ export function currentBranch(): string {
   }
 }
 
-function diffArgs(source: ReviewSource): { args: string[]; untracked: boolean } {
+/** What one review source contributes to a `git diff` invocation. */
+interface DiffBase {
+  /** Arguments after "diff" that select the base, or null when nothing is diffable yet. */
+  base: string[] | null
+  /** Whether untracked files belong to this review. */
+  includesUntracked: boolean
+}
+
+/** The single place that knows how a ReviewSource maps onto a diff. */
+function diffBaseArgs(source: ReviewSource, headExists: boolean): DiffBase {
   switch (source.kind) {
-    case "working": {
-      if (!hasHead()) return { args: [], untracked: true }
-      return { args: ["diff", "HEAD", "--no-renames", "--name-status", "-z", "--"], untracked: true }
-    }
-    case "staged": {
-      return { args: ["diff", "--cached", "--no-renames", "--name-status", "-z", "--"], untracked: false }
-    }
-    case "branch": {
+    case "working":
+      return { base: headExists ? ["HEAD"] : null, includesUntracked: true }
+    case "staged":
+      return { base: ["--cached"], includesUntracked: false }
+    case "branch":
+      return { base: [source.mergeBase], includesUntracked: true }
+    case "commit":
       return {
-        args: ["diff", source.mergeBase, "--no-renames", "--name-status", "-z", "--"],
-        untracked: true,
+        base: [source.parent === "empty" ? emptyTreeId() : source.parent, source.sha],
+        includesUntracked: false,
       }
-    }
-    case "commit": {
-      const parent = source.parent === "empty" ? emptyTreeId() : source.parent
-      return {
-        args: ["diff", parent, source.sha, "--no-renames", "--name-status", "-z", "--"],
-        untracked: false,
-      }
-    }
   }
 }
 
-function diffCountsArgs(source: ReviewSource): string[] | null {
-  switch (source.kind) {
-    case "working": {
-      if (!hasHead()) return null
-      return ["diff", "HEAD", "--no-renames", "--numstat", "-z", "--"]
-    }
-    case "staged":
-      return ["diff", "--cached", "--no-renames", "--numstat", "-z", "--"]
-    case "branch":
-      return ["diff", source.mergeBase, "--no-renames", "--numstat", "-z", "--"]
-    case "commit": {
-      const parent = source.parent === "empty" ? emptyTreeId() : source.parent
-      return ["diff", parent, source.sha, "--no-renames", "--numstat", "-z", "--"]
-    }
-  }
+/** `git diff` with a machine-readable format, for the given base. */
+function diffArgs(base: string[], format: "--name-status" | "--numstat"): string[] {
+  return ["diff", ...base, "--no-renames", format, "-z", "--"]
 }
 
 export function listChangedFiles(source: ReviewSource = { kind: "working" }): ReviewFile[] {
@@ -203,16 +191,15 @@ export function listChangedFiles(source: ReviewSource = { kind: "working" }): Re
     throw new Error("not a git repository (or any of the parent directories)")
   }
 
-  const { args: statusArgs, untracked } = diffArgs(source)
+  // One HEAD probe per call: hasHead() spawns git, and diffArgs used to ask
+  // once and skipTracked asked again.
+  const headExists = source.kind === "working" ? hasHead() : true
+  const { base, includesUntracked } = diffBaseArgs(source, headExists)
 
   const tracked: ReviewFile[] = []
-  // For working with no HEAD, skip tracked diff (all untracked)
-  const skipTracked = source.kind === "working" && !hasHead()
-
-  if (!skipTracked && statusArgs.length > 0) {
-    const statuses = run(statusArgs)
-    const countsArgs = diffCountsArgs(source)
-    const numstat = countsArgs ? run(countsArgs) : ""
+  if (base !== null) {
+    const statuses = run(diffArgs(base, "--name-status"))
+    const numstat = run(diffArgs(base, "--numstat"))
 
     const statusByPath = new Map<string, FileStatus>()
     const statusTokens = statuses.split("\0")
@@ -222,13 +209,11 @@ export function listChangedFiles(source: ReviewSource = { kind: "working" }): Re
     }
 
     const countsByPath = new Map<string, { additions: number; deletions: number }>()
-    if (numstat) {
-      for (const record of numstat.split("\0")) {
-        if (record === "") continue
-        const [add, del, ...pathParts] = record.split("\t")
-        const path = pathParts.join("\t")
-        countsByPath.set(path, { additions: parseCounts(add), deletions: parseCounts(del) })
-      }
+    for (const record of numstat.split("\0")) {
+      if (record === "") continue
+      const [add, del, ...pathParts] = record.split("\t")
+      const path = pathParts.join("\t")
+      countsByPath.set(path, { additions: parseCounts(add), deletions: parseCounts(del) })
     }
 
     for (const [path, status] of statusByPath) {
@@ -238,7 +223,7 @@ export function listChangedFiles(source: ReviewSource = { kind: "working" }): Re
   }
 
   let untrackedFiles: ReviewFile[] = []
-  if (untracked) {
+  if (includesUntracked) {
     const untrackedPaths = run(["ls-files", "--others", "--exclude-standard", "-z"])
       .split("\0")
       .filter(Boolean)
@@ -257,20 +242,12 @@ export function loadPatch(file: ReviewFile, source: ReviewSource = { kind: "work
   if (file.status === "untracked") {
     return synthesizedAddedPatch(file.path)
   }
-  switch (source.kind) {
-    case "working": {
-      if (!hasHead()) return synthesizedAddedPatch(file.path)
-      return run(["diff", "HEAD", "--no-renames", "--no-color", "--", file.path])
-    }
-    case "staged":
-      return run(["diff", "--cached", "--no-renames", "--no-color", "--", file.path])
-    case "branch":
-      return run(["diff", source.mergeBase, "--no-renames", "--no-color", "--", file.path])
-    case "commit": {
-      const parent = source.parent === "empty" ? emptyTreeId() : source.parent
-      return run(["diff", parent, source.sha, "--no-renames", "--no-color", "--", file.path])
-    }
+  const headExists = source.kind === "working" ? hasHead() : true
+  const { base } = diffBaseArgs(source, headExists)
+  if (base === null) {
+    return synthesizedAddedPatch(file.path)
   }
+  return run(["diff", ...base, "--no-renames", "--no-color", "--", file.path])
 }
 
 /** Every file git knows about in the working tree: tracked plus untracked. */
