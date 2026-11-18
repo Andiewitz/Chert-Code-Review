@@ -6,6 +6,7 @@
 // while, and the real renderer's event loop handles concurrent async work fine
 // (the synchronous git layer is only deterministic-loading fast local data).
 
+import { MAX_AGENT_ANSWER_LINES } from "./limits"
 import { tailLines } from "./text"
 
 let available: boolean | null = null
@@ -55,7 +56,7 @@ export async function runAgent(prompt: string, cwd: string): Promise<string> {
     if (exitCode !== 0) {
       throw new Error(stderr.trim() || `opencode run exited with code ${exitCode}`)
     }
-    return tailLines(stdout.trim(), 40)
+    return tailLines(stdout.trim(), MAX_AGENT_ANSWER_LINES)
   } finally {
     clearTimeout(timeout)
   }

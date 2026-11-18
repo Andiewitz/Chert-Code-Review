@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { basename, isAbsolute, join, resolve } from "node:path"
 import { configDir, readJson, writeJsonAtomic } from "./config"
 import { run } from "./git"
+import { MAX_CONTAINED_REPOS, MAX_RECENT_PROJECTS } from "./limits"
 import { toRealPath } from "./paths"
 
 export interface RecentProject {
@@ -98,7 +99,7 @@ export function loadRecent(): RecentProject[] {
       if (seen.has(real)) continue
       seen.add(real)
       out.push({ path: abs, lastOpened: r.lastOpened })
-      if (out.length >= 20) break
+      if (out.length >= MAX_RECENT_PROJECTS) break
     }
     return out
   } catch {
@@ -112,7 +113,7 @@ export function rememberProject(path: string): void {
     const real = toRealPath(abs)
     const list = loadRecent().filter((r) => toRealPath(r.path) !== real)
     list.unshift({ path: abs, lastOpened: Date.now() })
-    saveRecent(list.slice(0, 20))
+    saveRecent(list.slice(0, MAX_RECENT_PROJECTS))
   } catch {
     // must never break startup/opening
   }
@@ -165,7 +166,7 @@ export function findReposBelow(dir: string): string[] {
       out.push({ name, path: child })
     }
     out.sort((a, b) => a.name.localeCompare(b.name))
-    return out.slice(0, 50).map((e) => e.path)
+    return out.slice(0, MAX_CONTAINED_REPOS).map((e) => e.path)
   } catch {
     return []
   }

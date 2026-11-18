@@ -46,6 +46,7 @@ import {
   resolveProjectRoot,
 } from "../projects"
 import { configDir, readJson, writeJsonAtomic } from "../config"
+import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
 import { tailLines } from "../text"
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
@@ -1276,7 +1277,7 @@ export function ReviewApp() {
           const combined = `${stdout}${stderr !== "" ? `\n${stderr}` : ""}`.trim()
           addEntry(
             proc.exitCode === 0 ? "system" : "error",
-            combined === "" ? "(no output)" : tailLines(combined, 30),
+            combined === "" ? "(no output)" : tailLines(combined, MAX_COMMAND_OUTPUT_LINES),
           )
           setStatus(proc.exitCode === 0 ? `✓ /run ${rest}` : `✗ /run exited with ${proc.exitCode}`)
         } catch (error) {
@@ -1683,7 +1684,7 @@ export function ReviewApp() {
               "system",
               ids.length === 0
                 ? `${provider.label}: no models`
-                : `${provider.label} models:\n${tailLines(ids.join("\n"), 30)}`,
+                : `${provider.label} models:\n${tailLines(ids.join("\n"), MAX_COMMAND_OUTPUT_LINES)}`,
             )
             setStatus("")
           })

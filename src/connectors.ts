@@ -5,6 +5,7 @@
 // directory, which keeps tests hermetic) or from environment variables.
 
 import { join } from "node:path"
+import { MAX_PROVIDER_ERROR_LINES } from "./limits"
 import { tailLines } from "./text"
 import { configDir, readJson, writeJsonAtomic } from "./config"
 
@@ -198,7 +199,7 @@ export async function chatCompletion(
   if (!response.ok) {
     const body = await response.text().catch(() => "")
     throw new Error(
-      `${provider.label} API error ${response.status}${body !== "" ? `: ${tailLines(body.trim(), 3)}` : ""}`,
+      `${provider.label} API error ${response.status}${body !== "" ? `: ${tailLines(body.trim(), MAX_PROVIDER_ERROR_LINES)}` : ""}`,
     )
   }
   const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }

@@ -5,6 +5,7 @@
 import { copyFileSync, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { writeJsonAtomic } from "./config"
+import { MAX_SAVED_HIGHLIGHTS } from "./limits"
 import { gitDir } from "./git"
 
 export type HighlightSide = "new" | "old"
@@ -62,11 +63,11 @@ export function loadHighlights(): Highlight[] {
 
 export function saveHighlights(highlights: Highlight[]): void {
   const path = highlightsPath()
-  // cap 500: drop oldest AI first
+  // Over the cap, drop the oldest AI highlights first (user highlights are never dropped).
   let list = [...highlights]
-  if (list.length > 500) {
+  if (list.length > MAX_SAVED_HIGHLIGHTS) {
     const ai = list.filter((h) => h.by === "ai").sort((a, b) => a.createdAt - b.createdAt)
-    const toDrop = list.length - 500
+    const toDrop = list.length - MAX_SAVED_HIGHLIGHTS
     const dropIds = new Set(ai.slice(0, toDrop).map((h) => h.id))
     list = list.filter((h) => !dropIds.has(h.id))
   }

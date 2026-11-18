@@ -11,6 +11,7 @@
 // render deterministically regardless of the host renderer's event loop.
 
 import { readFileSync, statSync } from "node:fs"
+import { MAX_RECENT_COMMITS } from "./limits"
 
 export type FileStatus = "added" | "modified" | "deleted" | "untracked"
 
@@ -283,7 +284,7 @@ export function resolveReviewBase(): string | null {
 }
 
 /** List recent commits as { sha, subject }. */
-export function listRecentCommits(limit = 40): { sha: string; subject: string }[] {
+export function listRecentCommits(limit = MAX_RECENT_COMMITS): { sha: string; subject: string }[] {
   try {
     const out = run(["log", `--max-count=${limit}`, "--format=%H%x09%s"])
     return out
