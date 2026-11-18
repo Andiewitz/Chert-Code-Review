@@ -87,7 +87,7 @@ function buildHelpText(): string {
     "  Space       approve this file and move to the next unapproved one",
     "  Enter       run the picked action",
     "  Space       mark the file reviewed",
-    "  h           highlight lines (↑↓ move, Enter select, Esc done)",
+    "  drag        highlight lines (click one to edit, ask or dismiss)",
     "  PgUp/PgDn   scroll the diff, or the answer when it is open",
     "  Esc         menu · Ctrl+C quit",
     "  type a question and press Enter to ask",

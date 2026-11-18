@@ -6,12 +6,11 @@
 //   2. Ctrl+P command picker toggle
 //   3. highlight menu (arrows / Enter / Esc)
 //   4. Esc, in this order: picker, menu, projects, all-files, review picker,
-//      note editing, range selection, prompt text, code focus, open the menu
+//      note editing, prompt text, open the menu
 //   5. suggestion navigation and Tab completion
 //   6. Enter: suggestion accept, theme accept, prompt submit, tree open,
-//      done row, home recents, menu, projects, all-files, review actions,
-//      highlight range/cursor
-//   7. empty prompt: done, home recents, review screen (arrows, h, Space),
+//      done row, home recents, menu, projects, all-files, review actions
+//   7. empty prompt: done, home recents, review screen (arrows, Space),
 //      tree, menu, projects, all-files
 // Anything not handled here falls through to the renderer.
 
@@ -62,7 +61,7 @@ export interface KeyboardContext {
   cdMatches(): string[] | null
   runCommand(line: string): void
 
-  // Highlight menu + mode
+  // Highlight menu, notes and mouse-driven highlights
   highlightMenuOpen(): boolean
   setHighlightMenuOpen(open: boolean): void
   highlightMenuIndex(): number
@@ -101,19 +100,12 @@ export interface KeyboardContext {
   loadRecent(): Array<{ path: string }>
 
   // Review screen
-  focus(): "files" | "code"
-  setFocus(focus: "files" | "code"): void
   action(): number
   setAction(update: number | ((index: number) => number)): void
   activateAction(index: number): void
   navigate(delta: number): void
-  rangeStart(): number | null
-  setRangeStart(row: number | null): void
   codeRows(): Row[]
-  codeCursor(): number
-  setCodeCursor(update: number | ((row: number) => number)): void
   codeCursorRow(): number
-  scrollCode(y: number): void
   file(): ReviewFile | undefined
   files(): ReviewFile[]
   selectFile(index: number): void
@@ -266,18 +258,8 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
       ctx.setStatus("")
       return
     }
-    if (ctx.rangeStart() !== null) {
-      ctx.setRangeStart(null)
-      ctx.setStatus("")
-      return
-    }
     if (hasText) {
       ctx.clearInput()
-      return
-    }
-    if (ctx.view() === "review" && ctx.focus() === "code") {
-      ctx.setFocus("files")
-      ctx.setStatus("")
       return
     }
     if (ctx.view() === "review") {
@@ -370,105 +352,11 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
         ctx.setAllFilesOpen(false)
         ctx.setMenuOpen(false)
         ctx.selectFile(ctx.files()!.indexOf(af))
-        ctx.setFocus("files")
       }
       return
     }
     if (ctx.view() === "review") {
-      if (ctx.focus() === "files") {
-        ctx.activateAction(ctx.action())
-        return
-      }
-      // code ctx.focus: Enter
-      const cur = ctx.codeCursorRow()
-      const rows = ctx.codeRows()
-      const row = rows[cur]
-      const isCodeRow =
-        row !== undefined && (row.kind === "context" || row.kind === "add" || row.kind === "del")
-      const h = ctx.highlightForRowIndex(cur)
-      if (h) {
-        ctx.setHighlightMenuOpen(true)
-        ctx.setHighlightMenuIndex(0)
-        return
-      }
-      if (!isCodeRow) {
-        ctx.setStatus("Move to a code line to highlight.")
-        return
-      }
-      if (ctx.rangeStart() === null) {
-        ctx.setRangeStart(cur)
-        ctx.setStatus(
-          `Highlighting from line ${cur + 1}. Move to the last line and press Enter. Esc cancels.`,
-        )
-        return
-      }
-      // complete range
-      const rs = ctx.rangeStart()!
-      const start = Math.min(rs, cur)
-      const end = Math.max(rs, cur)
-      // validate: cannot cross hunk header or mix sides
-      const allRows = ctx.codeRows()
-      const sides = new Set<string>()
-      let crossesHunk = false
-      let lastHunk = -1
-      for (let i = start; i <= end; i++) {
-        const r = allRows[i]
-        if (!r) {
-          crossesHunk = true
-          break
-        }
-        if (r.kind === "hunk") {
-          crossesHunk = true
-          break
-        }
-        if (r.kind === "meta") {
-          crossesHunk = true
-          break
-        }
-        const side = r.kind === "del" ? "old" : "new"
-        sides.add(side)
-      }
-      if (crossesHunk) {
-        ctx.setStatus("Highlight range cannot cross a hunk header.")
-        ctx.setRangeStart(null)
-        return
-      }
-      if (sides.size > 1) {
-        ctx.setStatus("Highlight range cannot mix old and new sides.")
-        ctx.setRangeStart(null)
-        return
-      }
-      const side = sides.size === 1 ? (Array.from(sides)[0] as "new" | "old") : "new"
-      const textLines = allRows.slice(start, end + 1).map((r) => r.text)
-      const before = allRows.slice(Math.max(0, start - 2), start).map((r) => r.text)
-      const after = allRows.slice(end + 1, end + 3).map((r) => r.text)
-      const lineNo = (r: Row) => (side === "new" ? (r.newNo ?? 0) : (r.oldNo ?? 0))
-      const startLine = lineNo(allRows[start])
-      const endLine = lineNo(allRows[end])
-      const hl: Highlight = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        path: ctx.file()?.path ?? "",
-        side,
-        start: startLine,
-        end: endLine,
-        text: textLines,
-        before,
-        after,
-        by: "you",
-        level: "note",
-        note: "",
-        createdAt: Date.now(),
-      }
-      // prompt for note
-      ctx.setHighlightNoteMode(true)
-      ctx.setHighlightNoteText("")
-      // store pending highlight temporarily? Use a temp signal. We'll save on note ctx.submit.
-      // Store in a temp variable via a signal.
-      ctx.setPendingHighlight(hl)
-      ctx.setRangeStart(null)
-      ctx.setStatus(
-        "note for these lines (Enter saves, Enter with nothing saves without a note, Esc cancels)",
-      )
+      ctx.activateAction(ctx.action())
       return
     }
     return
@@ -512,50 +400,15 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
         ctx.setAction((i) => Math.max(0, Math.min(i + dir, ctx.actionCount() - 1)))
         return
       }
-      if (key.name === "h") {
-        key.preventDefault()
-        const entering = ctx.focus() !== "code"
-        ctx.setFocus(entering ? "code" : "files")
-        ctx.setRangeStart(null)
-        ctx.setStatus("")
-        if (entering) {
-          const first = ctx.codeRows().findIndex((r) => r.kind !== "meta")
-          const row = first === -1 ? 0 : first
-          ctx.setCodeCursor(row)
-          ctx.scrollCode(Math.max(0, row - 3))
-        }
-        return
-      }
       if (key.name === " " || key.name === "space") {
         key.preventDefault()
         ctx.toggleApproval()
         return
       }
-      if (ctx.focus() === "files") {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          ctx.navigate(key.name === "up" ? -1 : 1)
-          return
-        }
-      } else if (ctx.focus() === "code") {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const rows = ctx.codeRows()
-          if (rows.length === 0) return
-          const dir = key.name === "up" ? -1 : 1
-          ctx.setCodeCursor((c) => Math.max(0, Math.min(c + dir, rows.length - 1)))
-          // auto-scroll
-          ctx.scrollCode(Math.max(0, ctx.codeCursor() - 5))
-          return
-        }
-        if (key.name === "pageup" || key.name === "pagedown") {
-          key.preventDefault()
-          const delta = key.name === "pageup" ? -10 : 10
-          const rows = ctx.codeRows()
-          ctx.setCodeCursor((c) => Math.max(0, Math.min(c + delta, rows.length - 1)))
-          ctx.scrollCode(Math.max(0, ctx.codeCursor() - 5))
-          return
-        }
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault()
+        ctx.navigate(key.name === "up" ? -1 : 1)
+        return
       }
       return
     }

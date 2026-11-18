@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
-import { render, useKeyboard, useRenderer } from "@opentui/solid"
+import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid"
 import { getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption } from "@opentui/core"
 import { basename, join } from "node:path"
@@ -48,6 +48,7 @@ import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
 import { loadHighlights, saveHighlights, resolveHighlights } from "../highlights"
 import type { Highlight } from "../highlights"
+import { highlightFromRows, rowsUnderDrag } from "./selection"
 import { analysisText } from "../review/format"
 import { writeHandback } from "../review/handback"
 import {
@@ -133,6 +134,7 @@ export interface ReviewAppProps {
 
 export function ReviewApp(props: ReviewAppProps = {}) {
   const renderer = useRenderer()
+  const dims = useTerminalDimensions()
 
   // The CLI passes the root explicitly. Direct mounts (the smoke test) fall
   // back to the process directory once, here, and never again: every later git
@@ -181,7 +183,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const [lastAnswer, setLastAnswer] = createSignal("")
   const [answerFile, setAnswerFile] = createSignal("")
   const [answerIsError, setAnswerIsError] = createSignal(false)
-  const [focus, setFocus] = createSignal<"files" | "code">("files")
   const [codeCursor, setCodeCursor] = createSignal(0)
   // Approvals live in review-state.json; the counter makes their reads reactive.
   const [approvalsVersion, setApprovalsVersion] = createSignal(0)
@@ -194,7 +195,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const [resolvedHighlights, setResolvedHighlights] = createSignal(
     new Map<string, { startRow: number; endRow: number; moved: boolean } | null>(),
   )
-  const [rangeStart, setRangeStart] = createSignal<number | null>(null)
   const [highlightMenuOpen, setHighlightMenuOpen] = createSignal(false)
   const [highlightMenuIndex, setHighlightMenuIndex] = createSignal(0)
   const [highlightNoteMode, setHighlightNoteMode] = createSignal(false)
@@ -1128,19 +1128,12 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       openRecent,
       loadRecent,
 
-      focus,
-      setFocus,
       action,
       setAction,
       activateAction,
       navigate,
-      rangeStart,
-      setRangeStart,
       codeRows,
-      codeCursor,
-      setCodeCursor,
       codeCursorRow,
-      scrollCode: (y) => bestEffort("scroll code", () => codeScrollRef?.scrollTo({ x: 0, y })),
       file,
       files: () => files() ?? [],
       selectFile,
@@ -1211,7 +1204,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           const unrev = (files() ?? []).find((f) => !isFileApproved(f.path))
           if (unrev) {
             selectFile((files() ?? []).indexOf(unrev))
-            setFocus("files")
           }
         }
         return
@@ -1315,10 +1307,9 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     if (menuOpen()) return "↑↓ choose · Enter go · Esc close · Ctrl+C quit"
     if (allFilesOpen()) return "↑↓ choose · Enter jump · Esc close · Ctrl+C quit"
     if (!hasProject()) return "↑↓ choose · Enter open · /cd <path> · Esc menu · Ctrl+C quit"
-    if (focus() === "code") return "↑↓ line · Enter select · Esc done · Ctrl+C quit"
     if (answerOpen() && answerFile() === (file()?.path ?? ""))
       return "↑↓ file  ←→ action  Enter  PgUp/PgDn answer  Esc menu  Ctrl+C quit"
-    return "↑↓ file  ←→ action  Enter  Space approve  h highlight  Esc menu  Ctrl+C quit"
+    return "↑↓ file  ←→ action  Enter  Space approve  drag note  Esc menu  Ctrl+C quit"
   }
 
   // Keep the log pinned to the bottom as entries arrive.
@@ -1390,6 +1381,41 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     return `${who} \u00b7 ${note}`
   })
 
+  // The highlight tool is the mouse: a drag over the diff marks the rows under
+  // the pointer and asks for the note. Arrow keys stay on the file list.
+  useSelectionHandler((selection) => {
+    if (view() !== "review" || !hasProject() || menuOpen() || allFilesOpen() || projectsOpen()) return
+    const box = codeScrollRef
+    if (!box) return
+    const rows = codeRows()
+    const range = rowsUnderDrag({
+      box: { x: box.screenX, y: box.screenY, width: box.width, height: box.height },
+      scrollTop: box.scrollTop,
+      rowCount: rows.length,
+      anchor: selection.anchor,
+      focus: selection.focus,
+    })
+    if (!range) return
+    setCodeCursor(range.end)
+    const existing = range.start === range.end ? highlightForRowIndex(range.start) : undefined
+    if (existing) {
+      setHighlightMenuOpen(true)
+      setHighlightMenuIndex(0)
+      return
+    }
+    const built = highlightFromRows(rows, range.start, range.end, file()?.path ?? "")
+    if (!built.ok) {
+      setStatus(built.reason)
+      return
+    }
+    setHighlightNoteMode(true)
+    setHighlightNoteText("")
+    setPendingHighlight(built.highlight)
+    setStatus("note for these lines (Enter saves, Enter with nothing saves without a note, Esc cancels)")
+    // The click took the focus off the prompt; the note is typed there.
+    bestEffort("focus the note prompt", () => inputRef?.focus())
+  })
+
   const reviewedCount = createMemo(approvedCount)
 
   const suggestionWindow = createMemo(() => {
@@ -1451,11 +1477,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
                           borderColor={COLORS().rule}
                         >
                           <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1} flexDirection="row">
-                            <text
-                              fg={focus() === "files" ? COLORS().purple : COLORS().dim}
-                              attributes={ATTR.bold}
-                            >
-                              {`${focus() === "files" ? "\u25B8 " : "  "}Files`}
+                            <text fg={COLORS().purple} attributes={ATTR.bold}>
+                              {"\u25B8 Files"}
                             </text>
                             <text
                               fg={COLORS().dim}
@@ -1518,10 +1541,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
                         </box>
                         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
                           <box height={1} flexShrink={0} flexDirection="row">
-                            <text
-                              fg={focus() === "code" ? COLORS().bright : COLORS().text}
-                              attributes={ATTR.bold}
-                            >
+                            <text fg={COLORS().text} attributes={ATTR.bold}>
                               {file()?.path ?? ""}
                             </text>
                             <box flexGrow={1} />
@@ -1546,7 +1566,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
                           >
                             <For each={codeRows()}>
                               {(row, i) => {
-                                const isCursor = () => i() === codeCursorRow()
                                 const gutter = row.kind === "add" ? "+" : row.kind === "del" ? "-" : " "
                                 const num = row.kind === "del" ? (row.oldNo ?? "") : (row.newNo ?? "")
                                 const h = () => highlightForRowIndex(i())
@@ -1554,18 +1573,13 @@ export function ReviewApp(props: ReviewAppProps = {}) {
                                   <box
                                     flexDirection="row"
                                     backgroundColor={
-                                      isCursor()
-                                        ? COLORS().selectedBg
-                                        : row.kind === "add"
-                                          ? "#1a2420"
-                                          : row.kind === "del"
-                                            ? "#2a1a1f"
-                                            : COLORS().bg
+                                      row.kind === "add"
+                                        ? "#1a2420"
+                                        : row.kind === "del"
+                                          ? "#2a1a1f"
+                                          : COLORS().bg
                                     }
                                   >
-                                    <text fg={COLORS().purple}>
-                                      {isCursor() && focus() === "code" ? ">" : " "}
-                                    </text>
                                     <text fg={h() ? highlightColor(h()!) : COLORS().dim}>
                                       {h() ? "\u258C" : " "}
                                     </text>
@@ -1786,7 +1800,10 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           fallback={
             <>
               <text fg={COLORS().dim} attributes={ATTR.dim}>
-                {footerHints()}
+                {truncateEnd(
+                  footerHints(),
+                  Math.max(16, dims().width - 2 - (status() === "" ? 0 : status().length + 3)),
+                )}
               </text>
               <box flexGrow={1} />
               <Show when={status() !== ""}>
@@ -1812,11 +1829,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
             )}
           </For>
           <box flexGrow={1} />
-          <Show when={focus() === "code"}>
-            <text fg={COLORS().purple} attributes={ATTR.dim}>
-              {"highlight mode · Esc to leave"}
-            </text>
-          </Show>
         </box>
       </Show>
       <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />

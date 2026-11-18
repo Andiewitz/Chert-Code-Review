@@ -36,7 +36,7 @@ Review screen (the files and diff fill the top; the agent's five-line answer ban
 | `Left` / `Right` | move across the action bar: Back · Next                                                   |
 | `Enter`          | run the highlighted action                                                                |
 | `Space`          | mark the file reviewed                                                                    |
-| `h`              | highlight mode: `↑↓` moves the line cursor, `Enter` selects a line or range, `Esc` leaves |
+| drag (mouse)     | highlight the lines you drag over; click a highlighted line to edit, ask or dismiss       |
 | `PgUp` / `PgDn`  | scroll the answer pane (when open) or the diff                                            |
 | `Esc`            | open the menu (or close it)                                                               |
 | `Ctrl+C`         | quit                                                                                      |

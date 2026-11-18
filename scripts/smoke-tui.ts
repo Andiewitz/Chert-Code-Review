@@ -570,29 +570,21 @@ async function phaseETests(): Promise<void> {
     const setup = await render(ReviewApp, { width: 100, height: 30 })
     try {
       await setup.renderOnce()
-      // highlight mode
-      await setup.mockInput.pressKey("h")
+      let frame = setup.captureCharFrame()
+      const lines = frame.split("\n")
+      const firstLine = lines.findIndex((line) => line.includes("export const a = 1"))
+      const secondLine = lines.findIndex((line) => line.includes("export const b = 2"))
+      assert(firstLine !== -1 && secondLine === firstLine + 1, "phaseE finds the two added lines")
+      // The highlight tool is the mouse: drag down over both lines.
+      await setup.mockMouse.drag(45, firstLine, 45, secondLine)
       await setup.renderOnce()
-      // move cursor past meta/hunk rows to first code line
-      for (let i = 0; i < 5; i++) {
-        await setup.mockInput.pressArrow("down")
-      }
-      await setup.renderOnce()
-      // Enter starts range
-      await setup.mockInput.pressKey("RETURN")
-      await setup.renderOnce()
-      // move to second code line
-      await setup.mockInput.pressArrow("down")
-      await setup.renderOnce()
-      // Enter completes range, prompts for note
-      await setup.mockInput.pressKey("RETURN")
-      await setup.renderOnce()
-      // type a note and save
+      // the drag opens the note prompt; type a note and save it
       await setup.mockInput.pressKeys("my note".split(""))
+      await setup.renderOnce()
       await setup.mockInput.pressKey("RETURN")
       await new Promise((r) => setTimeout(r, 60))
       await setup.renderOnce()
-      let frame = setup.captureCharFrame()
+      frame = setup.captureCharFrame()
       assert(frame.includes("\u258C") || frame.includes("my note"), "phaseE highlight gutter or note shows")
       // /highlights lists it
       await setup.mockInput.pressKeys("/highlights".split(""))
