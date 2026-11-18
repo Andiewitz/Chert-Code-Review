@@ -13,6 +13,7 @@ import { displayPath, loadRecent, openProject, resolveProjectRoot } from "../pro
 import { bestEffort } from "../best-effort"
 import { configDir, readJson, writeJsonAtomic } from "../config"
 import { HomeScreen } from "./components/home-screen"
+import { Overlays } from "./components/overlays"
 import { RowList } from "./components/row-list"
 import { Wordmark } from "./components/wordmark"
 import { connectCommand, disconnectCommand, modelsCommand, useCommand } from "./commands/connectors"
@@ -1661,92 +1662,31 @@ export function ReviewApp() {
         </box>
       </Show>
 
-      {/* Menu overlay */}
-
-      <Show when={menuOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-          <box height={1} flexShrink={0} />
-          <Wordmark />
-          <box height={1} flexShrink={0} />
-          <text fg={COLORS().dim} attributes={ATTR.dim}>
-            {"menu"}
-          </text>
-          <box height={1} flexShrink={0} />
-          <RowList
-            rows={() => menuOptions().map((o) => ({ label: o.name, hint: o.description }))}
-            index={() => menuIndex()}
-          />
-          <box flexGrow={1} />
-        </box>
-      </Show>
-
-      {/* All files overlay */}
-      <Show when={allFilesOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-          <box height={1} flexShrink={0} />
-          <text fg={COLORS().purple} attributes={ATTR.bold}>{`All files (${files()?.length ?? 0})`}</text>
-          <box height={1} flexShrink={0} />
-          <scrollbox
-            ref={(el: ScrollBoxRenderable) => {
-              allFilesScrollRef = el
-            }}
-            flexGrow={1}
-            backgroundColor={COLORS().bg}
-          >
-            <RowList
-              rows={() => allFilesOptions().map((o) => ({ label: o.name, hint: o.description }))}
-              index={() => allFilesIndex()}
-            />
-          </scrollbox>
-          <box flexGrow={1} />
-        </box>
-      </Show>
-
-      <Show when={reviewPickerOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-          <box height={1} flexShrink={0} />
-          <text fg={COLORS().purple} attributes={ATTR.bold}>
-            {"Review source"}
-          </text>
-          <box height={1} flexShrink={0} />
-          <scrollbox
-            ref={(el: ScrollBoxRenderable) => {
-              reviewPickerScrollRef = el
-            }}
-            flexGrow={1}
-            backgroundColor={COLORS().bg}
-          >
-            <RowList
-              rows={() => allReviewTargets().map((s) => ({ label: s.label, hint: s.description }))}
-              index={() => reviewPickerIndex()}
-            />
-          </scrollbox>
-          <box flexGrow={1} />
-        </box>
-      </Show>
-
-      <Show when={highlightMenuOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={1}>
-          <text fg={COLORS().bright}>Highlight</text>
-          <box height={1} />
-          <text
-            fg={highlightMenuIndex() === 0 ? COLORS().bright : COLORS().dim}
-          >{`${highlightMenuIndex() === 0 ? "▸ " : "  "}Ask the AI about these lines`}</text>
-          <text
-            fg={highlightMenuIndex() === 1 ? COLORS().bright : COLORS().dim}
-          >{`${highlightMenuIndex() === 1 ? "▸ " : "  "}Edit note`}</text>
-          <text
-            fg={highlightMenuIndex() === 2 ? COLORS().bright : COLORS().dim}
-          >{`${highlightMenuIndex() === 2 ? "▸ " : "  "}${highlightForRowIndex(codeCursorRow())?.by === "ai" ? "Dismiss" : "Remove"}`}</text>
-          <text
-            fg={highlightMenuIndex() === 3 ? COLORS().bright : COLORS().dim}
-          >{`${highlightMenuIndex() === 3 ? "▸ " : "  "}Close`}</text>
-        </box>
-      </Show>
-
-      <Show when={projectsOpen()}>
-        <HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} />
-      </Show>
+      <Overlays
+        menuOpen={menuOpen}
+        menuIndex={menuIndex}
+        menuOptions={menuOptions}
+        allFilesOpen={allFilesOpen}
+        allFilesIndex={allFilesIndex}
+        allFilesOptions={allFilesOptions}
+        fileCount={() => files()?.length ?? 0}
+        onAllFilesScroll={(el: ScrollBoxRenderable) => {
+          allFilesScrollRef = el
+        }}
+        reviewPickerOpen={reviewPickerOpen}
+        reviewPickerIndex={reviewPickerIndex}
+        allReviewTargets={allReviewTargets}
+        onReviewPickerScroll={(el: ScrollBoxRenderable) => {
+          reviewPickerScrollRef = el
+        }}
+        highlightMenuOpen={highlightMenuOpen}
+        highlightMenuIndex={highlightMenuIndex}
+        highlightForRowIndex={highlightForRowIndex}
+        codeCursorRow={codeCursorRow}
+        projectsOpen={projectsOpen}
+        projectsIndex={projectsIndex}
+        loadRecent={loadRecent}
+      />
 
       <Show when={cdMatches() !== null}>
         <box height={1} flexShrink={0} paddingLeft={1}>
