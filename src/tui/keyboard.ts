@@ -31,7 +31,7 @@ export interface KeyPress {
   preventDefault(): void
 }
 
-export type ResolvedHighlightMap = Map<string, { startRow: number; endRow: number; moved: boolean } | null>
+type ResolvedHighlightMap = Map<string, { startRow: number; endRow: number; moved: boolean } | null>
 
 export interface KeyboardContext {
   // Predicates computed from prompt + suggestion state

@@ -36,7 +36,7 @@ export interface AgentTurnResult {
 }
 
 /** The single wording used whenever there is no usable AI connection. */
-export function noAiConnectedMessage(provider: ProviderDef): string {
+function noAiConnectedMessage(provider: ProviderDef): string {
   return `No AI is connected yet. Easiest: get a free key at ${provider.keyUrl}, then type /connect ${provider.id} YOUR_KEY and then /use ${provider.id}.`
 }
 

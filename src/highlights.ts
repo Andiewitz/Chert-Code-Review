@@ -10,8 +10,8 @@ import { gitDir } from "./git"
 import { bestEffort, tryOr } from "./best-effort"
 
 export type HighlightSide = "new" | "old"
-export type HighlightBy = "you" | "ai"
-export type HighlightLevel = "note" | "high" | "medium" | "low"
+type HighlightBy = "you" | "ai"
+type HighlightLevel = "note" | "high" | "medium" | "low"
 
 export interface Highlight {
   id: string

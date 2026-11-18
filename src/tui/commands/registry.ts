@@ -72,7 +72,7 @@ export const COMMAND_DEFS: CommandDef[] = [
   { name: "quit", aliases: ["exit", "q"], usage: "/quit", description: "exit chert (Ctrl+C also works)" },
 ]
 
-export function buildHelpText(): string {
+function buildHelpText(): string {
   const pad = Math.max(...COMMAND_DEFS.map((c) => c.usage.length)) + 2
   return [
     "keys:",

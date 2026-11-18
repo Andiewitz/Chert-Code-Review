@@ -39,7 +39,7 @@ export function expandPath(input: string, base = process.cwd()): string {
   return p
 }
 
-export function isDirectory(path: string): boolean {
+function isDirectory(path: string): boolean {
   return tryOr(() => statSync(path).isDirectory(), false)
 }
 

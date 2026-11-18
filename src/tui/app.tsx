@@ -203,7 +203,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   let inputRef: InputRenderable | undefined
   let codeScrollRef: ScrollBoxRenderable | undefined
   let answerScrollRef: ScrollBoxRenderable | undefined
-  let diffRef: any
   let logRef: ScrollBoxRenderable | undefined
   let treeRef: ScrollBoxRenderable | undefined
   let fileScrollRef: ScrollBoxRenderable | undefined
@@ -692,7 +691,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const tick = () => setStatus(`${statusPrefix}${Math.floor((Date.now() - startedAt) / 1000)}s`)
     tick()
     const interval = setInterval(tick, 1000)
-    // There is no cancel affordance yet; request timeouts are the backstop.
+    // Request timeouts are the backstop for a stalled provider or agent.
     try {
       const turn = await runAgentTurn({
         prompt,
@@ -736,7 +735,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     }
   }
 
-  /** Chdir into a project, remember it and load its review. */
+  /** Open a project, remember it and load its review. */
   function openProjectAt(path: string): string | undefined {
     const root = openProject(path)
     if (root === undefined) return undefined

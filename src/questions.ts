@@ -6,5 +6,3 @@ export const QUESTIONS = {
   safe: (path: string) =>
     `Look at the uncommitted changes in ${path}. Is there anything unsafe or that could break? Explain in plain words, with the exact lines.`,
 } as const
-
-export type QuestionKey = keyof typeof QUESTIONS

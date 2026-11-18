@@ -112,16 +112,15 @@ function saveThemeName(name: ThemeName): void {
 }
 
 const [themeName, setThemeNameSignal] = createSignal<ThemeName>(loadThemeName())
-export function currentTheme(): ThemeName {
-  return themeName()
-}
 export function setTheme(name: ThemeName): void {
   setThemeNameSignal(name)
   saveThemeName(name)
 }
-export function colors(): ThemePalette {
+function colors(): ThemePalette {
   return THEMES[themeName()]
 }
+
+/** The active palette. A getter so panes re-colour when the theme changes. */
 export const COLORS = colors
 
 // Terminal cells have no font size, so hierarchy comes from weight and tone:

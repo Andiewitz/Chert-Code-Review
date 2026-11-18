@@ -1,7 +1,7 @@
 // Pure parser for unified diff patches into display rows.
 // No I/O, no git calls. Used by the two-pane code view.
 
-export type RowKind = "hunk" | "context" | "add" | "del" | "meta"
+type RowKind = "hunk" | "context" | "add" | "del" | "meta"
 
 export interface Row {
   kind: RowKind
