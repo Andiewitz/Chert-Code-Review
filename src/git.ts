@@ -41,12 +41,21 @@ const ALLOWED = new Set([
   "hash-object",
 ])
 
-export function run(args: string[]): string {
+interface RunOptions {
+  /** Directory to run in; defaults to the process cwd (normally the repo root). */
+  cwd?: string
+  /** Data for commands that read stdin, such as hash-object. */
+  input?: string
+}
+
+export function run(args: string[], options: RunOptions = {}): string {
   if (args.length === 0) throw new Error("git: no command given")
   if (!ALLOWED.has(args[0])) {
     throw new Error(`git: command not allowed: ${args[0]}`)
   }
   const proc = Bun.spawnSync(["git", ...args], {
+    cwd: options.cwd,
+    stdin: options.input === undefined ? undefined : Buffer.from(options.input),
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
@@ -119,15 +128,9 @@ export function validateRef(value: string): boolean {
   }
 }
 
-function emptyTreeId(): string {
-  const proc = Bun.spawnSync(["git", "hash-object", "-t", "tree", "--stdin"], {
-    stdin: Buffer.from(""),
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  })
-  if (proc.exitCode !== 0) throw new Error(proc.stderr.toString().trim() || "hash-object failed")
-  return proc.stdout.toString().trim()
+/** The empty tree object, used as the parent of a repository's first commit. */
+export function emptyTreeId(): string {
+  return run(["hash-object", "-t", "tree", "--stdin"], { input: "" }).trim()
 }
 
 function hasHead(): boolean {

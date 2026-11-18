@@ -2,6 +2,7 @@ import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, isAbsolute, join, resolve } from "node:path"
 import { configDir, readJson, writeJsonAtomic } from "./config"
+import { run } from "./git"
 
 export interface RecentProject {
   path: string
@@ -58,13 +59,7 @@ export function resolveProjectRoot(dir: string): string | undefined {
   try {
     const d = expandPath(dir)
     if (!isDirectory(d)) return undefined
-    const proc = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], {
-      cwd: d,
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    if (proc.exitCode !== 0) return undefined
-    const out = proc.stdout.toString().trim()
+    const out = run(["rev-parse", "--show-toplevel"], { cwd: d }).trim()
     if (out === "") return undefined
     return toReal(out)
   } catch {
