@@ -48,6 +48,7 @@ import {
 import { bestEffort } from "../best-effort"
 import { configDir, readJson, writeJsonAtomic } from "../config"
 import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
+import { shortenPath, truncateEnd } from "./format"
 import { COLORS, THEMES, THEME_DESCRIPTIONS, THEME_LABELS, setTheme } from "./theme"
 import type { ThemeName } from "./theme"
 import { tailLines } from "../text"
@@ -80,21 +81,6 @@ const WORDMARK = [
 ]
 
 const WORDMARK_FG = ["#e2d6ff", "#d3c0ff", "#c4aeff", "#b39bfb", "#9f86f4", "#8367d8"]
-
-/** Shorten a path from the left, keeping the last segments that fit. */
-function shortenPath(p: string, max: number): string {
-  if (p.length <= max) return p
-  const parts = p.split("/")
-  let out = parts[parts.length - 1]
-  for (let i = parts.length - 2; i >= 0; i--) {
-    const cand = parts[i] + "/" + out
-    if (cand.length + 2 > max) {
-      return "…/" + out
-    }
-    out = cand
-  }
-  return out
-}
 
 interface PickerRow {
   label: string
@@ -431,7 +417,7 @@ export function ReviewApp() {
       case "branch":
         return `reviewing: everything on ${currentBranch()} since ${src.base}`
       case "commit": {
-        const subj = src.subject.length > 40 ? src.subject.slice(0, 40) + "…" : src.subject
+        const subj = truncateEnd(src.subject, 40)
         return `reviewing: commit ${src.sha.slice(0, 7)}: ${subj}`
       }
     }
@@ -2416,7 +2402,7 @@ export function ReviewApp() {
         >
           <text
             fg={COLORS().dim}
-          >{`You asked: ${lastQuestion().length > 50 ? lastQuestion().slice(0, 50) + "\u2026" : lastQuestion()}  \u00b7  ${activeLabel()}`}</text>
+          >{`You asked: ${truncateEnd(lastQuestion(), 50)}  \u00b7  ${activeLabel()}`}</text>
           <scrollbox
             ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
             flexGrow={1}
