@@ -33,7 +33,7 @@ Review screen (the files and diff fill the top; the agent's five-line answer ban
 | key              | action                                                                                    |
 | ---------------- | ----------------------------------------------------------------------------------------- |
 | `Up` / `Down`    | previous / next file                                                                      |
-| `Left` / `Right` | move across the action bar: Back · Is it messy? · Next                                   |
+| `Left` / `Right` | move across the action bar: Back · Next                                                   |
 | `Enter`          | run the highlighted action                                                                |
 | `Space`          | mark the file reviewed                                                                    |
 | `h`              | highlight mode: `↑↓` moves the line cursor, `Enter` selects a line or range, `Esc` leaves |

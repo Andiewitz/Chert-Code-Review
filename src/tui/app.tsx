@@ -44,7 +44,6 @@ import {
 } from "./commands/registry"
 import { ATTR, COLORS, THEMES, THEME_DESCRIPTIONS, THEME_LABELS } from "./theme"
 import type { ThemeName } from "./theme"
-import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
 import { loadHighlights, saveHighlights, resolveHighlights } from "../highlights"
@@ -125,7 +124,7 @@ const HANDLERS: Record<string, CommandHandler> = {
   models: modelsCommand,
 }
 
-const ACTION_ITEMS = ["Back", "Is it messy?", "Next"]
+const ACTION_ITEMS = ["Back", "Next"]
 
 export interface ReviewAppProps {
   /** Repository root to open on mount; the TUI starts at the home screen without one. */
@@ -162,7 +161,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   let previousProject: string | null = null
 
   // Phase 3 guided review state
-  const [action, setAction] = createSignal(3)
+  const [action, setAction] = createSignal(1)
   const [queue, setQueue] = createSignal<string[]>([])
   const [fileMemory, setFileMemory] = createSignal(new Map<string, "asked" | "passed">())
   const [menuOpen, setMenuOpen] = createSignal(false)
@@ -410,7 +409,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     reviewState = loadReviewState(cwd())
     setQueue([])
     setFileMemory(new Map())
-    setAction(2)
+    setAction(1)
     setMenuOpen(false)
     setAllFilesOpen(false)
     setAnswerOpen(false)
@@ -457,14 +456,14 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     bestEffort("scroll fileScrollRef", () => fileScrollRef?.scrollTo({ x: 0, y: Math.max(0, i - 6) }))
     const current = list[i]
     if (patchFor === current.path) {
-      setAction(2)
+      setAction(1)
       return
     }
     const cached = patchCache.get(current.path)
     if (cached !== undefined) {
       setPatch(cached)
       patchFor = current.path
-      setAction(2)
+      setAction(1)
       bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
       return
     }
@@ -478,7 +477,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         `Error loading diff for ${current.path}: ${error instanceof Error ? error.message : String(error)}`,
       )
     }
-    setAction(2)
+    setAction(1)
     bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
   }
 
@@ -534,7 +533,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const list = files() ?? []
     const idx = list.findIndex((f) => f.path === path)
     if (idx !== -1) selectFile(idx)
-    setAction(2)
+    setAction(1)
     if (answerFile() !== path) setAnswerOpen(false)
   }
 
@@ -863,7 +862,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     }
     const cur = file()?.path
     if (cur) markAsked(cur)
-    setAction(2)
+    setAction(1)
     askCurrent(raw)
   }
 
@@ -928,7 +927,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       if (v === "review") {
         setAnswerFile(file()?.path ?? "")
         setAnswerOpen(true)
-        setAction(2)
+        setAction(1)
         setStatus("")
       } else if (v === "tree") {
         setStatus("answer ready, press a in review")
@@ -1302,16 +1301,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       return
     }
     if (i === 1) {
-      if (busy()) {
-        setStatus("Still thinking about your last question.")
-        return
-      }
-      markAsked(cur)
-      setAction(2)
-      askCurrent(QUESTIONS.messy(cur))
-      return
-    }
-    if (i === 2) {
       nextFile()
       return
     }
@@ -1328,8 +1317,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     if (!hasProject()) return "↑↓ choose · Enter open · /cd <path> · Esc menu · Ctrl+C quit"
     if (focus() === "code") return "↑↓ line · Enter select · Esc done · Ctrl+C quit"
     if (answerOpen() && answerFile() === (file()?.path ?? ""))
-      return "↑↓ file · ←→ action · Enter run · PgUp/PgDn answer · Esc menu"
-    return "↑↓ file · ←→ action · Enter run · Space approve · h highlight · Esc menu"
+      return "↑↓ file  ←→ action  Enter  PgUp/PgDn answer  Esc menu  Ctrl+C quit"
+    return "↑↓ file  ←→ action  Enter  Space approve  h highlight  Esc menu  Ctrl+C quit"
   }
 
   // Keep the log pinned to the bottom as entries arrive.
@@ -1802,7 +1791,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
               <box flexGrow={1} />
               <Show when={status() !== ""}>
                 <text fg={COLORS().purpleBright} attributes={ATTR.dim}>
-                  {status()}
+                  {`· ${status()}`}
                 </text>
               </Show>
             </>

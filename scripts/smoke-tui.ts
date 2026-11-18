@@ -330,8 +330,8 @@ async function phase4Tests(): Promise<void> {
       let frame = setup.captureCharFrame()
       assert(frame.includes("a2") || frame.includes("addedByTest"), "phase4 diff text on screen initially")
 
-      // ask via "Is it messy?" button (highlight index 1)
-      await setup.mockInput.pressArrow("left")
+      // ask by typing a question: the action bar has no preset question
+      await setup.mockInput.pressKeys("look".split(""))
       await setup.renderOnce()
       await setup.mockInput.pressKey("RETURN")
       await setup.renderOnce()
@@ -339,7 +339,7 @@ async function phase4Tests(): Promise<void> {
       assert(frame.includes("Thinking"), "phase4 shows thinking state in pane")
       assert(frame.includes("a2") || frame.includes("addedByTest"), "phase4 diff text stays on screen")
       // busy: submit another prompt -> rejected
-      await setup.mockInput.pressArrow("left")
+      await setup.mockInput.pressKeys("again".split(""))
       await setup.renderOnce()
       await setup.mockInput.pressKey("RETURN")
       await setup.renderOnce()
@@ -650,8 +650,8 @@ async function phaseFTests(): Promise<void> {
     const setup = await render(ReviewApp, { width: 100, height: 30 })
     try {
       await setup.renderOnce()
-      // action bar starts on Next; Left once reaches "Is it messy?", Enter runs it
-      await setup.mockInput.pressArrow("left")
+      // ask by typing a question, then wait for the fake connector's answer
+      await setup.mockInput.pressKeys("look".split(""))
       await setup.renderOnce()
       await setup.mockInput.pressKey("RETURN")
       await setup.renderOnce()
@@ -778,15 +778,12 @@ async function phaseWalkTests(): Promise<void> {
       assert(changedLine.includes("\u258c"), "walk anchor is placed on the changed line")
       const diffAt = lines.findIndex((line) => line.includes("export const a2"))
       const promptAt = lines.findIndex((line) => line.includes("ask a question"))
-      const actionsAt = lines.findIndex((line) => line.includes("Is it messy?"))
+      const actionsAt = lines.findIndex((line) => line.includes("Back") && line.includes("Next"))
       assert(
         diffAt !== -1 && diffAt < promptAt && promptAt < actionsAt,
         "walk layout: diff above the band, prompt and actions",
       )
-      assert(
-        !frame.includes("Is it safe?"),
-        "walk action bar no longer offers Is it safe?",
-      )
+      assert(!frame.includes("Is it messy?"), "walk action bar no longer offers Is it messy?")
       const stored = JSON.parse(readFileSync(join(repo, ".git", "chert", "review-state.json"), "utf8")) as {
         walks: Record<string, { forkedSessionId: string; mode: string }>
       }

@@ -83,7 +83,7 @@ function buildHelpText(): string {
   return [
     "keys:",
     "  Up/Down     previous / next file",
-    "  Left/Right  pick an action: Back · messy · safe · Next",
+    "  Left/Right  pick an action: Back · Next",
     "  Space       approve this file and move to the next unapproved one",
     "  Enter       run the picked action",
     "  Space       mark the file reviewed",
