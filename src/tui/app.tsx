@@ -20,7 +20,6 @@ import type { ReviewSource } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
 import type { TreeLine } from "../tree"
-import { opencodeAvailable, runAgent } from "../agent"
 import {
   PROVIDERS,
   chatCompletion,
@@ -33,7 +32,6 @@ import {
   saveProviderKey,
   setActive,
 } from "../connectors"
-import type { ProviderDef } from "../connectors"
 import {
   displayPath,
   openProject,
@@ -51,6 +49,7 @@ import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
 import { HomeScreen } from "./components/home-screen"
 import { RowList } from "./components/row-list"
 import { Wordmark } from "./components/wordmark"
+import { runAgentTurn } from "./services/agent-turn"
 import { shortenPath, truncateEnd } from "./format"
 import { commandToSuggestion } from "./commands/registry"
 import type { CommandDef, Suggestion } from "./commands/registry"
@@ -111,11 +110,6 @@ interface PickerItem {
 }
 
 const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
-
-/** The single wording used whenever there is no usable AI connection. */
-function noAiConnectedMessage(provider: ProviderDef): string {
-  return `No AI is connected yet. Easiest: get a free key at ${provider.keyUrl}, then type /connect ${provider.id} YOUR_KEY and then /use ${provider.id}.`
-}
 
 export function ReviewApp() {
   const renderer = useRenderer()
@@ -731,73 +725,30 @@ export function ReviewApp() {
     const interval = setInterval(tick, 1000)
     // There is no cancel affordance yet; request timeouts are the backstop.
     try {
-      const active = connector()
-      if (active === "opencode") {
-        if (!opencodeAvailable()) {
-          const message = noAiConnectedMessage(PROVIDERS[0])
-          addEntry("error", message)
-          setLastAnswer(message)
-          setAnswerIsError(true)
-          return
-        }
-        const result = await runAgent(prompt, cwd())
-        const parsed = parseAgentHighlights(
-          result,
-          (files() ?? []).map((f) => f.path),
-          patchRowsFor,
-          highlights(),
-        )
-        if (parsed.highlights.length > 0) {
-          const skipMsg =
-            parsed.skipped.length > 0 ? ` (${parsed.skipped.length} skipped: ${parsed.skipped[0]})` : ""
-          if (persistHighlights([...highlights(), ...parsed.highlights])) {
-            setStatus(`AI added ${parsed.highlights.length} highlights${skipMsg}`)
-          }
-        }
-        addEntry("agent", parsed.cleanText)
-        setLastAnswer(parsed.cleanText)
-        return
+      const turn = await runAgentTurn({
+        prompt,
+        connectorId: connector(),
+        model: model(),
+        projectRoot: cwd(),
+        changedFiles: (files() ?? []).map((f) => f.path),
+        getRows: patchRowsFor,
+        existingHighlights: highlights(),
+        onPrefixChange: (prefix) => {
+          statusPrefix = prefix
+          tick()
+        },
+      })
+      if (turn.highlights.length > 0 && persistHighlights([...highlights(), ...turn.highlights])) {
+        const skipMsg = turn.skipped.length > 0 ? ` (${turn.skipped.length} skipped: ${turn.skipped[0]})` : ""
+        setStatus(`AI added ${turn.highlights.length} highlights${skipMsg}`)
       }
-      const provider = findProvider(active)
-      if (!provider) {
-        const msg = `unknown connector "${active}"`
-        addEntry("error", msg)
-        setLastAnswer(msg)
-        setAnswerIsError(true)
-        return
-      }
-      const key = resolveKey(provider.id)
-      if (key === undefined) {
-        const message = noAiConnectedMessage(provider)
-        addEntry("error", message)
-        setLastAnswer(message)
-        setAnswerIsError(true)
-        return
-      }
-      const useModel = model() ?? provider.defaultModel
-      statusPrefix = `${provider.id} ${useModel}: Thinking… `
-      tick()
-      const system = `You are chert's code-review assistant. Current project directory: ${cwd()}. Locally changed files: ${(files() ?? []).map((f) => f.path).join(", ") || "none"}.`
-      const result = await chatCompletion(provider, key, useModel, system, prompt)
-      const parsed = parseAgentHighlights(
-        result,
-        (files() ?? []).map((f) => f.path),
-        patchRowsFor,
-        highlights(),
-      )
-      if (parsed.highlights.length > 0) {
-        const skipMsg =
-          parsed.skipped.length > 0 ? ` (${parsed.skipped.length} skipped: ${parsed.skipped[0]})` : ""
-        if (persistHighlights([...highlights(), ...parsed.highlights])) {
-          setStatus(`AI added ${parsed.highlights.length} highlights${skipMsg}`)
-        }
-      }
-      addEntry("agent", parsed.cleanText)
-      setLastAnswer(parsed.cleanText)
+      addEntry(turn.isError ? "error" : "agent", turn.text)
+      setLastAnswer(turn.text)
+      setAnswerIsError(turn.isError)
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      addEntry("error", msg)
-      setLastAnswer(msg)
+      const message = error instanceof Error ? error.message : String(error)
+      addEntry("error", message)
+      setLastAnswer(message)
       setAnswerIsError(true)
     } finally {
       clearInterval(interval)
