@@ -18,6 +18,7 @@ bun install        # install deps
 bun dev            # open the review TUI (needs a real terminal)
 bun dev [path]     # open the review TUI for a path/repo
 bun dev --help     # CLI help
+bun run check      # typecheck + unit tests + headless TUI smoke test
 ```
 
 You can also run `chert [path]` to open the TUI directly in a specific project (or a subfolder inside a git repo; chert opens the repo root).
@@ -73,6 +74,7 @@ in the current project directory (opencode must be installed; no API keys needed
 ```
 /help              command list
 /refresh           re-scan the working tree
+/review <source>   working | staged | branch [base] | last | commit <ref>
 /open <query>      jump to a file
 /run <command>     run a shell command in the current project
 /cd <dir>          switch project directory (opens repo root)
@@ -81,7 +83,28 @@ in the current project directory (opencode must be installed; no API keys needed
 /forget <name>     remove a saved project
 /cwd               show the current project
 /tree              whole project tree (folders, nested files, M/D/?? marks)
+/log               chat history for this session
+/highlights        list saved highlights (/highlights clear [yes])
+/export            write your review notes to markdown
 ```
+
+## Where state lives
+
+chert never writes to the repository it reviews; everything it saves is outside
+the working tree:
+
+| path                             | contents                                      |
+| -------------------------------- | --------------------------------------------- |
+| `~/.chert/projects.json`         | recent projects                               |
+| `~/.chert/theme.json`            | the last theme you picked                     |
+| `~/.chert/review-sources.json`   | last review source per project                |
+| `~/.chert/connectors.json`       | active connector and saved keys (mode `0600`) |
+| `<gitdir>/chert/highlights.json` | highlights per commit                         |
+
+All of them honour `CHERT_CONFIG_DIR` for the `~/.chert` directory, which is how
+the tests stay hermetic.
+
+Writes are atomic (temp file + rename), so a crash cannot leave a truncated file.
 
 ## Connectors (bring your own model)
 
@@ -132,12 +155,16 @@ bun link           # exposes `chert` on your PATH
 - `bunfig.toml` was removed on purpose: compiled executables break on bunfig
   preloads, so the Solid TSX transform is registered programmatically in
   `src/index.ts` instead (`ensureSolidTransformPlugin()`)
-- `tsconfig.json` sets `jsxImportSource: "@opentui/solid"` and excludes
-  `MCode/` (an unrelated Rust/Tauri project in this folder)
+- `tsconfig.json` sets `jsxImportSource: "@opentui/solid"`
 
 ## Testing
 
 ```sh
 bun run smoke      # headless end-to-end test: seeds a temp git repo, mounts the
                    # TUI, drives it with mock keys, asserts rendered frames
+bun test           # unit tests (git layer, highlights, config, dial rows, projects)
+bun run typecheck  # tsc --noEmit
 ```
+
+Formatting is Prettier (`bun run format`); `.git-blame-ignore-revs` keeps the
+formatting commit out of `git blame`.
