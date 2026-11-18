@@ -1,6 +1,6 @@
-import { createEffect, createMemo, createSignal, For, Show, onCleanup } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { render, useKeyboard, useRenderer } from "@opentui/solid"
-import { TextAttributes, extToFiletype, getTreeSitterClient } from "@opentui/core"
+import { getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption } from "@opentui/core"
 import { basename, join } from "node:path"
 import { currentBranch, listChangedFiles, listRecentCommits, loadPatch, resolveSha } from "../git"
@@ -8,30 +8,10 @@ import type { ReviewSource } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
 import type { TreeLine } from "../tree"
-import {
-  PROVIDERS,
-  chatCompletion,
-  clearProviderKey,
-  findProvider,
-  getActive,
-  keySource,
-  listModels,
-  resolveKey,
-  saveProviderKey,
-  setActive,
-} from "../connectors"
-import {
-  displayPath,
-  openProject,
-  expandPath,
-  findReposBelow,
-  forgetProject,
-  loadRecent,
-  resolveProjectRoot,
-} from "../projects"
+import { PROVIDERS, findProvider, getActive, keySource } from "../connectors"
+import { displayPath, loadRecent, openProject, resolveProjectRoot } from "../projects"
 import { bestEffort } from "../best-effort"
 import { configDir, readJson, writeJsonAtomic } from "../config"
-import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
 import { HomeScreen } from "./components/home-screen"
 import { RowList } from "./components/row-list"
 import { Wordmark } from "./components/wordmark"
@@ -49,7 +29,8 @@ import { exportCommand, highlightsCommand, logCommand, reviewCommand } from "./c
 import { helpCommand, homeCommand, quitCommand, runShellCommand, themesCommand } from "./commands/system"
 import { runAgentTurn } from "./services/agent-turn"
 import { shortenPath, truncateEnd } from "./format"
-import { commandToSuggestion } from "./commands/registry"
+import { handleKeyPress } from "./keyboard"
+import type { KeyboardContext } from "./keyboard"
 import type { CommandDef, Suggestion } from "./commands/registry"
 import {
   COMMAND_DEFS,
@@ -61,13 +42,12 @@ import {
 } from "./commands/registry"
 import { ATTR, COLORS, THEMES, THEME_DESCRIPTIONS, THEME_LABELS } from "./theme"
 import type { ThemeName } from "./theme"
-import { tailLines } from "../text"
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
 import { mkdirSync, writeFileSync } from "node:fs"
-import { loadHighlights, parseAgentHighlights, saveHighlights, resolveHighlights } from "../highlights"
-import type { Highlight, HighlightLevel } from "../highlights"
+import { loadHighlights, saveHighlights, resolveHighlights } from "../highlights"
+import type { Highlight } from "../highlights"
 
 // ---------------------------------------------------------------------------
 // UI
@@ -900,503 +880,107 @@ export function ReviewApp() {
     setView("log")
   }
 
-  // Keyboard handling: no modes. Box empty => screen keys. Box has text => editing.
-  useKeyboard((key) => {
-    const hasText = (inputRef?.value ?? "") !== ""
-    const showList =
-      pickerOpen() ||
-      (commandQuery() !== null && filteredCommands().length > 0) ||
-      (themeInput() !== null && themeSuggestions().length > 0)
+  /** The surface the keyboard handler may use. */
+  function keyboardContext(): KeyboardContext {
+    return {
+      hasInputText: () => (inputRef?.value ?? "") !== "",
+      hasSuggestions: () =>
+        pickerOpen() ||
+        (commandQuery() !== null && filteredCommands().length > 0) ||
+        (themeInput() !== null && themeSuggestions().length > 0),
+      actionCount: () => ACTION_ITEMS.length,
 
-    // Review source picker (opened by /review)
-    if (reviewPickerOpen()) {
-      if (key.name === "up" || key.name === "down") {
-        key.preventDefault()
-        const items = allReviewTargets()
-        const dir = key.name === "up" ? -1 : 1
-        setReviewPickerIndex((i) => {
-          const next = Math.max(0, Math.min(i + dir, Math.max(0, items.length - 1)))
-          bestEffort("scroll reviewPickerScrollRef", () =>
-            reviewPickerScrollRef?.scrollTo({ x: 0, y: Math.max(0, next - 6) }),
-          )
-          return next
-        })
-        return
-      }
-      if (key.name === "return" || key.name === "enter") {
-        key.preventDefault()
-        const items = allReviewTargets()
-        const item = items[reviewPickerIndex()]
-        if (item) {
-          setReviewPickerOpen(false)
-          runCommand(item.insert.slice(1))
-        }
-        return
-      }
-      if (key.name === "escape") {
-        key.preventDefault()
-        setReviewPickerOpen(false)
-        return
-      }
-      return
+      reviewPickerOpen,
+      setReviewPickerOpen,
+      reviewPickerIndex,
+      setReviewPickerIndex,
+      allReviewTargets,
+      scrollReviewPicker: (y) =>
+        bestEffort("scroll review picker", () => reviewPickerScrollRef?.scrollTo({ x: 0, y })),
+
+      pickerOpen,
+      setPickerOpen,
+      suggestionIndex,
+      setSuggestionIndex,
+      visibleSuggestions,
+      acceptSuggestion,
+      setPromptValue,
+      clearInput,
+      submit,
+      themeInput,
+      themeSuggestions,
+      cdMatches,
+      runCommand,
+
+      highlightMenuOpen,
+      setHighlightMenuOpen,
+      highlightMenuIndex,
+      setHighlightMenuIndex,
+      highlightNoteMode,
+      setHighlightNoteMode,
+      setHighlightNoteText,
+      setPendingHighlight,
+      highlightForRowIndex,
+      highlights,
+      setResolvedHighlights,
+      resolvedHighlights,
+      persistHighlights,
+      markAsked,
+      askAgent: (prompt) => {
+        void askAgent(prompt)
+      },
+
+      menuOpen,
+      setMenuOpen,
+      menuIndex,
+      setMenuIndex,
+      menuOptions,
+      handleMenuSelection,
+      projectsOpen,
+      setProjectsOpen,
+      projectsIndex,
+      setProjectsIndex,
+      allFilesOpen,
+      setAllFilesOpen,
+      allFilesIndex,
+      setAllFilesIndex,
+      view,
+      setStatus,
+      hasProject,
+      openRecent,
+      loadRecent,
+
+      focus,
+      setFocus,
+      action,
+      setAction,
+      activateAction,
+      navigate,
+      rangeStart,
+      setRangeStart,
+      codeRows,
+      codeCursor,
+      setCodeCursor,
+      codeCursorRow,
+      scrollCode: (y) => bestEffort("scroll code", () => codeScrollRef?.scrollTo({ x: 0, y })),
+      file,
+      files: () => files() ?? [],
+      selectFile,
+      patch,
+      reviewed,
+      setReviewed,
+      scrollAllFiles: (y) => bestEffort("scroll all files", () => allFilesScrollRef?.scrollTo({ x: 0, y })),
+
+      moveTreeIndex,
+      openTreeSelection,
+      doneIndex,
+      setDoneIndex,
+      doneOptions,
+      activateDoneRow,
     }
+  }
 
-    // Ctrl+P command picker
-    if (key.ctrl && key.name === "p") {
-      key.preventDefault()
-      if (pickerOpen()) setPickerOpen(false)
-      else {
-        setPickerOpen(true)
-        setSuggestionIndex(0)
-      }
-      return
-    }
-
-    // Highlight menu overlay
-    if (highlightMenuOpen()) {
-      if (key.name === "up" || key.name === "down") {
-        key.preventDefault()
-        const dir = key.name === "up" ? -1 : 1
-        setHighlightMenuIndex((i) => Math.max(0, Math.min(i + dir, 3)))
-        return
-      }
-      if (key.name === "return" || key.name === "enter") {
-        key.preventDefault()
-        const idx = highlightMenuIndex()
-        const cur = codeCursorRow()
-        const h = highlightForRowIndex(cur)
-        if (!h) {
-          setHighlightMenuOpen(false)
-          return
-        }
-        if (idx === 0) {
-          // Ask the AI about these lines
-          setHighlightMenuOpen(false)
-          const q = `Look at lines ${h.start}-${h.end} in ${h.path}. ${h.note ? h.note + " " : ""}The lines are:\n${h.text.map((t) => `  ${t}`).join("\n")}\nExplain in plain words, with the exact lines.`
-          markAsked(h.path)
-          void askAgent(q)
-          return
-        }
-        if (idx === 1) {
-          // Edit note
-          setHighlightMenuOpen(false)
-          setHighlightNoteMode(true)
-          setHighlightNoteText(h.note)
-          setPendingHighlight(h)
-          setPromptValue(h.note)
-          setStatus("edit note (Enter saves, Esc cancels)")
-          return
-        }
-        if (idx === 2) {
-          // Dismiss (AI) or Remove (mine)
-          const saved = persistHighlights(highlights().filter((x) => x.id !== h.id))
-          setResolvedHighlights(new Map(resolvedHighlights()))
-          setHighlightMenuOpen(false)
-          if (saved) setStatus(h.by === "ai" ? "dismissed AI highlight" : "removed highlight")
-          return
-        }
-        // Close
-        setHighlightMenuOpen(false)
-        return
-      }
-      if (key.name === "escape") {
-        key.preventDefault()
-        setHighlightMenuOpen(false)
-        return
-      }
-      return
-    }
-
-    // Esc
-    if (key.name === "escape") {
-      if (pickerOpen()) {
-        key.preventDefault()
-        setPickerOpen(false)
-        return
-      }
-      if (menuOpen()) {
-        setMenuOpen(false)
-        setAllFilesOpen(false)
-        return
-      }
-      if (projectsOpen()) {
-        setProjectsOpen(false)
-        return
-      }
-      if (allFilesOpen()) {
-        setAllFilesOpen(false)
-        return
-      }
-      if (reviewPickerOpen()) {
-        setReviewPickerOpen(false)
-        return
-      }
-      if (highlightNoteMode()) {
-        setHighlightNoteMode(false)
-        setPendingHighlight(null)
-        clearInput()
-        setStatus("")
-        return
-      }
-      if (rangeStart() !== null) {
-        setRangeStart(null)
-        setStatus("")
-        return
-      }
-      if (hasText) {
-        clearInput()
-        return
-      }
-      if (view() === "review" && focus() === "code") {
-        setFocus("files")
-        setStatus("")
-        return
-      }
-      if (view() === "review") {
-        setMenuOpen(true)
-        return
-      }
-      return
-    }
-
-    // Suggestion list navigation
-    if ((key.name === "up" || key.name === "down") && showList) {
-      key.preventDefault()
-      const list = visibleSuggestions()
-      if (list.length === 0) return
-      const dir = key.name === "up" ? -1 : 1
-      setSuggestionIndex((i) => Math.max(0, Math.min(i + dir, list.length - 1)))
-      return
-    }
-
-    if (key.name === "tab") {
-      const matches = cdMatches()
-      if (matches !== null && matches.length > 0) {
-        key.preventDefault()
-        const first = matches[0]
-        const recents = loadRecent()
-        const rec = recents.find((r) => basename(r.path) === first)
-        const name = rec ? basename(rec.path) : first
-        const completed = name.includes(" ") ? `"${name}"` : name
-        setPromptValue(`/cd ${completed} `)
-        return
-      }
-      const list = visibleSuggestions()
-      if (list.length > 0) {
-        key.preventDefault()
-        setSuggestionIndex((i) => (i + 1) % list.length)
-        return
-      }
-      return
-    }
-
-    if (key.name === "return" || key.name === "enter") {
-      key.preventDefault()
-      if (pickerOpen() && visibleSuggestions().length > 0) {
-        acceptSuggestion(visibleSuggestions()[Math.min(suggestionIndex(), visibleSuggestions().length - 1)])
-        return
-      }
-      if (themeInput() !== null && visibleSuggestions().length > 0) {
-        acceptSuggestion(visibleSuggestions()[Math.min(suggestionIndex(), visibleSuggestions().length - 1)])
-        submit()
-        return
-      }
-      if (hasText) {
-        submit()
-        return
-      }
-      if (view() === "tree") {
-        openTreeSelection()
-        return
-      }
-      if (view() === "done") {
-        activateDoneRow(doneIndex())
-        return
-      }
-      if (view() === "review" && !hasProject()) {
-        openRecent(projectsIndex())
-        return
-      }
-
-      if (menuOpen()) {
-        handleMenuSelection(menuIndex())
-        return
-      }
-      if (projectsOpen()) {
-        const recents = loadRecent()
-        const item = recents[projectsIndex()]
-        if (item) {
-          setProjectsOpen(false)
-          setMenuOpen(false)
-          openRecent(projectsIndex())
-        }
-        return
-      }
-      if (allFilesOpen()) {
-        const af = (files() ?? [])[allFilesIndex()]
-        if (af) {
-          setAllFilesOpen(false)
-          setMenuOpen(false)
-          selectFile(files()!.indexOf(af))
-          setFocus("files")
-        }
-        return
-      }
-      if (view() === "review") {
-        if (focus() === "files") {
-          activateAction(action())
-          return
-        }
-        // code focus: Enter
-        const cur = codeCursorRow()
-        const rows = codeRows()
-        const row = rows[cur]
-        const isCodeRow =
-          row !== undefined && (row.kind === "context" || row.kind === "add" || row.kind === "del")
-        const h = highlightForRowIndex(cur)
-        if (h) {
-          setHighlightMenuOpen(true)
-          setHighlightMenuIndex(0)
-          return
-        }
-        if (!isCodeRow) {
-          setStatus("Move to a code line to highlight.")
-          return
-        }
-        if (rangeStart() === null) {
-          setRangeStart(cur)
-          setStatus(`Highlighting from line ${cur + 1}. Move to the last line and press Enter. Esc cancels.`)
-          return
-        }
-        // complete range
-        const rs = rangeStart()!
-        const start = Math.min(rs, cur)
-        const end = Math.max(rs, cur)
-        // validate: cannot cross hunk header or mix sides
-        const allRows = codeRows()
-        const sides = new Set<string>()
-        let crossesHunk = false
-        let lastHunk = -1
-        for (let i = start; i <= end; i++) {
-          const r = allRows[i]
-          if (!r) {
-            crossesHunk = true
-            break
-          }
-          if (r.kind === "hunk") {
-            crossesHunk = true
-            break
-          }
-          if (r.kind === "meta") {
-            crossesHunk = true
-            break
-          }
-          const side = r.kind === "del" ? "old" : "new"
-          sides.add(side)
-        }
-        if (crossesHunk) {
-          setStatus("Highlight range cannot cross a hunk header.")
-          setRangeStart(null)
-          return
-        }
-        if (sides.size > 1) {
-          setStatus("Highlight range cannot mix old and new sides.")
-          setRangeStart(null)
-          return
-        }
-        const side = sides.size === 1 ? (Array.from(sides)[0] as "new" | "old") : "new"
-        const textLines = allRows.slice(start, end + 1).map((r) => r.text)
-        const before = allRows.slice(Math.max(0, start - 2), start).map((r) => r.text)
-        const after = allRows.slice(end + 1, end + 3).map((r) => r.text)
-        const lineNo = (r: Row) => (side === "new" ? (r.newNo ?? 0) : (r.oldNo ?? 0))
-        const startLine = lineNo(allRows[start])
-        const endLine = lineNo(allRows[end])
-        const hl: Highlight = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          path: file()?.path ?? "",
-          side,
-          start: startLine,
-          end: endLine,
-          text: textLines,
-          before,
-          after,
-          by: "you",
-          level: "note",
-          note: "",
-          createdAt: Date.now(),
-        }
-        // prompt for note
-        setHighlightNoteMode(true)
-        setHighlightNoteText("")
-        // store pending highlight temporarily? Use a temp signal. We'll save on note submit.
-        // Store in a temp variable via a signal.
-        setPendingHighlight(hl)
-        setRangeStart(null)
-        setStatus("note for these lines (Enter saves, Enter with nothing saves without a note, Esc cancels)")
-        return
-      }
-      return
-    }
-
-    // Empty box: screen keys
-    if (!hasText) {
-      if (view() === "done") {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const dir = key.name === "up" ? -1 : 1
-          setDoneIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, doneOptions().length - 1))))
-          return
-        }
-        return
-      }
-      if (view() === "review" && !hasProject()) {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const dir = key.name === "up" ? -1 : 1
-          const count = loadRecent().length
-          setProjectsIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, count - 1))))
-          return
-        }
-        if (key.name === "delete") {
-          key.preventDefault()
-          const item = loadRecent()[projectsIndex()]
-          if (item) {
-            forgetProject(item.path)
-            setProjectsIndex((i) => Math.max(0, Math.min(i, Math.max(0, loadRecent().length - 1))))
-            setStatus(`forgot ${basename(item.path)}`)
-          }
-          return
-        }
-        return
-      }
-      if (view() === "review") {
-        if (key.name === "left" || key.name === "right") {
-          key.preventDefault()
-          const dir = key.name === "left" ? -1 : 1
-          setAction((i) => Math.max(0, Math.min(i + dir, ACTION_ITEMS.length - 1)))
-          return
-        }
-        if (key.name === "h") {
-          key.preventDefault()
-          const entering = focus() !== "code"
-          setFocus(entering ? "code" : "files")
-          setRangeStart(null)
-          setStatus("")
-          if (entering) {
-            const first = codeRows().findIndex((r) => r.kind !== "meta")
-            const row = first === -1 ? 0 : first
-            setCodeCursor(row)
-            bestEffort("scroll codeScrollRef", () =>
-              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, row - 3) }),
-            )
-          }
-          return
-        }
-        if (key.name === " " || key.name === "space") {
-          key.preventDefault()
-          const f = file()
-          if (f) {
-            const keyStr = `${f.path}\u0000${Bun.hash(patch())}`
-            const next = new Set(reviewed())
-            if (next.has(keyStr)) next.delete(keyStr)
-            else next.add(keyStr)
-            setReviewed(next)
-          }
-          return
-        }
-        if (focus() === "files") {
-          if (key.name === "up" || key.name === "down") {
-            key.preventDefault()
-            navigate(key.name === "up" ? -1 : 1)
-            return
-          }
-        } else if (focus() === "code") {
-          if (key.name === "up" || key.name === "down") {
-            key.preventDefault()
-            const rows = codeRows()
-            if (rows.length === 0) return
-            const dir = key.name === "up" ? -1 : 1
-            setCodeCursor((c) => Math.max(0, Math.min(c + dir, rows.length - 1)))
-            // auto-scroll
-            bestEffort("scroll codeScrollRef", () =>
-              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, codeCursor() - 5) }),
-            )
-            return
-          }
-          if (key.name === "pageup" || key.name === "pagedown") {
-            key.preventDefault()
-            const delta = key.name === "pageup" ? -10 : 10
-            const rows = codeRows()
-            setCodeCursor((c) => Math.max(0, Math.min(c + delta, rows.length - 1)))
-            bestEffort("scroll codeScrollRef", () =>
-              codeScrollRef?.scrollTo({ x: 0, y: Math.max(0, codeCursor() - 5) }),
-            )
-            return
-          }
-        }
-        return
-      }
-      if (view() === "tree") {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          moveTreeIndex(key.name === "up" ? -1 : 1)
-          return
-        }
-        return
-      }
-
-      if (menuOpen()) {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const dir = key.name === "up" ? -1 : 1
-          setMenuIndex((i) => {
-            const next = Math.max(0, Math.min(i + dir, menuOptions().length - 1))
-            return next
-          })
-          return
-        }
-        return
-      }
-      if (projectsOpen()) {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const dir = key.name === "up" ? -1 : 1
-          const recents = loadRecent()
-          setProjectsIndex((i) => {
-            const next = Math.max(0, Math.min(i + dir, Math.max(0, recents.length - 1)))
-            return next
-          })
-          return
-        }
-        if (key.name === "delete") {
-          key.preventDefault()
-          const item = loadRecent()[projectsIndex()]
-          if (item) {
-            forgetProject(item.path)
-            setProjectsIndex((i) => Math.max(0, Math.min(i, Math.max(0, loadRecent().length - 1))))
-            setStatus(`forgot ${basename(item.path)}`)
-          }
-          return
-        }
-        return
-      }
-      if (allFilesOpen()) {
-        if (key.name === "up" || key.name === "down") {
-          key.preventDefault()
-          const dir = key.name === "up" ? -1 : 1
-          setAllFilesIndex((i) => {
-            const next = Math.max(0, Math.min(i + dir, (files()?.length ?? 1) - 1))
-            bestEffort("scroll allFilesScrollRef", () =>
-              allFilesScrollRef?.scrollTo({ x: 0, y: Math.max(0, next - 6) }),
-            )
-            return next
-          })
-          return
-        }
-        return
-      }
-    }
-  })
+  useKeyboard((key) => handleKeyPress(keyboardContext(), key))
 
   function handleMenuSelection(i: number): void {
     switch (i) {
