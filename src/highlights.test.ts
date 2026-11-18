@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { parsePatch } from "./diffrows"
-import { parseAgentHighlights } from "./highlights"
+import { capHighlights, parseAgentHighlights } from "./highlights"
+import type { Highlight } from "./highlights"
 
 /** Wrap the agent's highlight JSON in the fenced block chert looks for. */
 function answerWith(entries: unknown[]): string {
@@ -12,9 +13,7 @@ describe("parseAgentHighlights", () => {
     // a.ts has two lines, b.ts has four. A highlight on b.ts line 3 must be
     // accepted even though a.ts never reaches line 3.
     const rowsA = parsePatch("@@ -1,2 +1,2 @@\n+const a1 = 1\n+const a2 = 2\n")
-    const rowsB = parsePatch(
-      "@@ -1,4 +1,4 @@\n+const b1 = 1\n+const b2 = 2\n+const b3 = 3\n+const b4 = 4\n",
-    )
+    const rowsB = parsePatch("@@ -1,4 +1,4 @@\n+const b1 = 1\n+const b2 = 2\n+const b3 = 3\n+const b4 = 4\n")
     const rowsByFile: Record<string, ReturnType<typeof parsePatch>> = { "a.ts": rowsA, "b.ts": rowsB }
 
     const result = parseAgentHighlights(
@@ -128,5 +127,49 @@ describe("parseAgentHighlights validation", () => {
     const ids = [...first.highlights, ...second.highlights].map((h) => h.id)
     expect(new Set(ids).size).toBe(ids.length)
     expect(ids.every((id) => id.startsWith("ai-"))).toBe(true)
+  })
+})
+
+/** A minimal highlight; `by` and `createdAt` are all the cap looks at. */
+function highlight(id: string, by: "you" | "ai", createdAt: number): Highlight {
+  return {
+    id,
+    path: "a.ts",
+    side: "new",
+    start: createdAt,
+    end: createdAt,
+    text: ["line"],
+    before: [],
+    after: [],
+    by,
+    level: "note",
+    note: "",
+    createdAt,
+  }
+}
+
+describe("capHighlights", () => {
+  test("drops the oldest AI highlights to fit the cap and keeps every user highlight", () => {
+    const user = Array.from({ length: 10 }, (_, i) => highlight(`you-${i}`, "you", i))
+    const ai = Array.from({ length: 495 }, (_, i) => highlight(`ai-${i}`, "ai", 100 + i))
+    const result = capHighlights([...user, ...ai], 500)
+
+    expect(result.list).toHaveLength(500)
+    expect(result.droppedAi).toBe(5)
+    expect(result.overCap).toBe(false)
+    expect(result.list.filter((h) => h.by === "you")).toHaveLength(10)
+    // The five oldest AI entries are the ones that go.
+    expect(result.list.some((h) => h.id === "ai-0")).toBe(false)
+    expect(result.list.some((h) => h.id === "ai-5")).toBe(true)
+  })
+
+  test("drops nothing when user highlights alone exceed the cap", () => {
+    const user = Array.from({ length: 510 }, (_, i) => highlight(`you-${i}`, "you", i))
+    const ai = Array.from({ length: 5 }, (_, i) => highlight(`ai-${i}`, "ai", 1000 + i))
+    const result = capHighlights([...user, ...ai], 500)
+
+    expect(result.list).toHaveLength(515)
+    expect(result.droppedAi).toBe(0)
+    expect(result.overCap).toBe(true)
   })
 })

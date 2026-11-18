@@ -61,18 +61,41 @@ export function loadHighlights(): Highlight[] {
   }
 }
 
-export function saveHighlights(highlights: Highlight[]): void {
-  const path = highlightsPath()
-  // Over the cap, drop the oldest AI highlights first (user highlights are never dropped).
-  let list = [...highlights]
-  if (list.length > MAX_SAVED_HIGHLIGHTS) {
-    const ai = list.filter((h) => h.by === "ai").sort((a, b) => a.createdAt - b.createdAt)
-    const toDrop = list.length - MAX_SAVED_HIGHLIGHTS
-    const dropIds = new Set(ai.slice(0, toDrop).map((h) => h.id))
-    list = list.filter((h) => !dropIds.has(h.id))
-  }
+export interface SaveHighlightsResult {
+  /** AI highlights dropped to stay under the cap. */
+  droppedAi: number
+  /** True when user highlights alone already exceed the cap (nothing dropped). */
+  overCap: boolean
+}
+
+export interface CappedHighlights extends SaveHighlightsResult {
+  list: Highlight[]
+}
+
+/**
+ * Apply the save cap. User highlights are the user's data and are never
+ * dropped; only the oldest AI highlights give way to keep the file at or under
+ * `max`. When user highlights alone exceed the cap, everything is kept and
+ * `overCap` says so, so the caller can say it once.
+ */
+export function capHighlights(highlights: Highlight[], max = MAX_SAVED_HIGHLIGHTS): CappedHighlights {
+  const userCount = highlights.filter((h) => h.by === "you").length
+  // The user's own highlights already fill the file: dropping AI ones would not
+  // bring it under the cap, so keep everything and report the overflow instead.
+  if (userCount >= max) return { list: highlights, droppedAi: 0, overCap: true }
+  const budget = max - userCount
+  const aiByAge = highlights.filter((h) => h.by === "ai").sort((a, b) => a.createdAt - b.createdAt)
+  const keptAi = new Set(aiByAge.slice(Math.max(0, aiByAge.length - budget)).map((h) => h.id))
+  const list = highlights.filter((h) => h.by === "you" || keptAi.has(h.id))
+  return { list, droppedAi: highlights.length - list.length, overCap: false }
+}
+
+/** Persist highlights through {@link capHighlights}. */
+export function saveHighlights(highlights: Highlight[]): SaveHighlightsResult {
+  const { list, droppedAi, overCap } = capHighlights(highlights)
   const data: HighlightsFile = { version: 1, highlights: list }
-  writeJsonAtomic(path, data)
+  writeJsonAtomic(highlightsPath(), data)
+  return { droppedAi, overCap }
 }
 
 // Pure resolver: given diff rows and highlights for a file, return Map id -> resolved or null.

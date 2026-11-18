@@ -11,6 +11,7 @@ import type { TreeLine } from "../tree"
 import { PROVIDERS, findProvider, getActive, keySource } from "../connectors"
 import { displayPath, loadRecent, openProject, resolveProjectRoot } from "../projects"
 import { bestEffort } from "../best-effort"
+import { MAX_SAVED_HIGHLIGHTS } from "../limits"
 import { configDir, readJson, writeJsonAtomic } from "../config"
 import { HomeScreen } from "./components/home-screen"
 import { Overlays } from "./components/overlays"
@@ -656,10 +657,16 @@ export function ReviewApp() {
    * Replace the highlight list and persist it. Returns false (with a status
    * message) when the write failed, so the caller does not report success.
    */
+  let capWarningShown = false
+
   function persistHighlights(next: Highlight[]): boolean {
     setHighlights(next)
     try {
-      saveHighlights(next)
+      const result = saveHighlights(next)
+      if (result.overCap && !capWarningShown) {
+        capWarningShown = true
+        setStatus(`over ${MAX_SAVED_HIGHLIGHTS} highlights: yours are all kept, new AI ones will not be`)
+      }
       return true
     } catch (error) {
       setStatus(`could not save highlights: ${error instanceof Error ? error.message : String(error)}`)
