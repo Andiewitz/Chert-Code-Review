@@ -5,7 +5,7 @@
 // directory, which keeps tests hermetic) or from environment variables.
 
 import { join } from "node:path"
-import { tailLines } from "./agent"
+import { tailLines } from "./text"
 import { configDir, readJson, writeJsonAtomic } from "./config"
 
 export interface ProviderDef {

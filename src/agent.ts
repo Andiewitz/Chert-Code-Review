@@ -6,6 +6,8 @@
 // while, and the real renderer's event loop handles concurrent async work fine
 // (the synchronous git layer is only deterministic-loading fast local data).
 
+import { tailLines } from "./text"
+
 let available: boolean | null = null
 
 export function opencodeAvailable(): boolean {
@@ -57,10 +59,4 @@ export async function runAgent(prompt: string, cwd: string): Promise<string> {
   } finally {
     clearTimeout(timeout)
   }
-}
-
-export function tailLines(text: string, max: number): string {
-  const lines = text.split("\n")
-  if (lines.length <= max) return text
-  return `… ${lines.length - max} earlier lines hidden\n${lines.slice(-max).join("\n")}`
 }

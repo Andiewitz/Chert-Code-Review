@@ -20,7 +20,7 @@ import type { ReviewSource } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
 import type { TreeLine } from "../tree"
-import { opencodeAvailable, runAgent, tailLines } from "../agent"
+import { opencodeAvailable, runAgent } from "../agent"
 import {
   PROVIDERS,
   chatCompletion,
@@ -46,6 +46,7 @@ import {
   resolveProjectRoot,
 } from "../projects"
 import { configDir, readJson, writeJsonAtomic } from "../config"
+import { tailLines } from "../text"
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
