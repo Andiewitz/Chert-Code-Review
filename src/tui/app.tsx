@@ -1006,14 +1006,9 @@ export function ReviewApp() {
       const hl = pendingHighlight()
       if (hl) {
         const finalHl = { ...hl, note: (inputRef?.value ?? "").trim() }
-        const next = [...highlights(), finalHl]
-        setHighlights(next)
-        try {
-          saveHighlights(next)
-        } catch {
-          /* ignore */
+        if (persistHighlights([...highlights(), finalHl])) {
+          setStatus(`highlighted lines ${hl.start}-${hl.end}`)
         }
-        setStatus(`highlighted lines ${hl.start}-${hl.end}`)
       }
       setHighlightNoteMode(false)
       setPendingHighlight(null)
@@ -1035,6 +1030,21 @@ export function ReviewApp() {
     if (cur) markAsked(cur)
     setAction(3)
     void askAgent(raw)
+  }
+
+  /**
+   * Replace the highlight list and persist it. Returns false (with a status
+   * message) when the write failed, so the caller does not report success.
+   */
+  function persistHighlights(next: Highlight[]): boolean {
+    setHighlights(next)
+    try {
+      saveHighlights(next)
+      return true
+    } catch (error) {
+      setStatus(`could not save highlights: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
   }
 
   /** Diff rows for any changed file, not just the one currently on screen. */
@@ -1080,16 +1090,11 @@ export function ReviewApp() {
           highlights(),
         )
         if (parsed.highlights.length > 0) {
-          const next = [...highlights(), ...parsed.highlights]
-          setHighlights(next)
-          try {
-            saveHighlights(next)
-          } catch {
-            /* ignore */
-          }
           const skipMsg =
             parsed.skipped.length > 0 ? ` (${parsed.skipped.length} skipped: ${parsed.skipped[0]})` : ""
-          setStatus(`AI added ${parsed.highlights.length} highlights${skipMsg}`)
+          if (persistHighlights([...highlights(), ...parsed.highlights])) {
+            setStatus(`AI added ${parsed.highlights.length} highlights${skipMsg}`)
+          }
         }
         addEntry("agent", parsed.cleanText)
         setLastAnswer(parsed.cleanText)
@@ -1123,16 +1128,11 @@ export function ReviewApp() {
         highlights(),
       )
       if (parsed.highlights.length > 0) {
-        const next = [...highlights(), ...parsed.highlights]
-        setHighlights(next)
-        try {
-          saveHighlights(next)
-        } catch {
-          /* ignore */
-        }
         const skipMsg =
           parsed.skipped.length > 0 ? ` (${parsed.skipped.length} skipped: ${parsed.skipped[0]})` : ""
-        setStatus(`AI added ${parsed.highlights.length} highlights${skipMsg}`)
+        if (persistHighlights([...highlights(), ...parsed.highlights])) {
+          setStatus(`AI added ${parsed.highlights.length} highlights${skipMsg}`)
+        }
       }
       addEntry("agent", parsed.cleanText)
       setLastAnswer(parsed.cleanText)
@@ -1796,16 +1796,10 @@ export function ReviewApp() {
         }
         if (idx === 2) {
           // Dismiss (AI) or Remove (mine)
-          const next = highlights().filter((x) => x.id !== h.id)
-          setHighlights(next)
-          try {
-            saveHighlights(next)
-          } catch {
-            /* ignore */
-          }
+          const saved = persistHighlights(highlights().filter((x) => x.id !== h.id))
           setResolvedHighlights(new Map(resolvedHighlights()))
           setHighlightMenuOpen(false)
-          setStatus(h.by === "ai" ? "dismissed AI highlight" : "removed highlight")
+          if (saved) setStatus(h.by === "ai" ? "dismissed AI highlight" : "removed highlight")
           return
         }
         // Close
