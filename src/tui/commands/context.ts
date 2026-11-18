@@ -41,6 +41,8 @@ export interface CommandContext {
   restoreSavedReviewSource(root: string): void
   openReviewPicker(): void
   sourceLabel(): string
+  /** Guided review, forking the session named by `arg`, or "fresh" for none. */
+  startWalk(arg: string): void
 
   // Highlights
   highlights(): Highlight[]

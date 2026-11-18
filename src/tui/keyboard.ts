@@ -118,8 +118,10 @@ export interface KeyboardContext {
   files(): ReviewFile[]
   selectFile(index: number): void
   patch(): string
-  reviewed(): Set<string>
-  setReviewed(next: Set<string>): void
+  /** Whether the current file is approved for its current patch. */
+  approved(): boolean
+  /** Space: approve or un-approve the current file, then move on. */
+  toggleApproval(): void
   scrollAllFiles(y: number): void
 
   // Tree + done
@@ -526,14 +528,7 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
       }
       if (key.name === " " || key.name === "space") {
         key.preventDefault()
-        const f = ctx.file()
-        if (f) {
-          const keyStr = `${f.path}\u0000${Bun.hash(ctx.patch())}`
-          const next = new Set(ctx.reviewed())
-          if (next.has(keyStr)) next.delete(keyStr)
-          else next.add(keyStr)
-          ctx.setReviewed(next)
-        }
+        ctx.toggleApproval()
         return
       }
       if (ctx.focus() === "files") {

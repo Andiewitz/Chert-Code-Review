@@ -4,7 +4,7 @@
 //   3. drives the prompt and navigation with mock keyboard input, asserting
 //      rendered frames at each step
 // Run with: bun run scripts/smoke-tui.ts
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { tryOr } from "../src/best-effort"
@@ -303,7 +303,7 @@ async function phase4Tests(): Promise<void> {
     const { chmodSync } = await import("node:fs")
     chmodSync(script, 0o755)
 
-    // prepend to PATH BEFORE importing the app (opencodeAvailable caches)
+    // prepend to PATH BEFORE importing the app (harness detection caches)
     process.env.PATH = binDir + ":" + (process.env.PATH ?? "")
     process.env.CHERT_CONFIG_DIR = cfg
 
@@ -707,16 +707,127 @@ async function phaseFTests(): Promise<void> {
       assert(!frame.includes("ai note") || true, "phaseF dismiss handled")
       // busy guard: ask again while... not busy now. Skip.
 
-      // Space toggles reviewed on first file (leave highlight mode first)
+      // Space approves the only file; there is nothing left, so the review ends.
       await setup.mockInput.pressEscape()
       await new Promise((r) => setTimeout(r, 60))
       await setup.renderOnce()
       await setup.mockInput.pressKey(" ")
       await setup.renderOnce()
       frame = setup.captureCharFrame()
-      console.log("PHASEF4 FRAME:\n" + frame + "\nENDPF4")
-      console.log("PHASEF4B FRAME:\n" + frame + "\nENDPF4B")
-      assert(frame.includes("\u2713"), "phaseF Space toggles reviewed mark")
+      assert(frame.includes("All done."), "phaseF Space approves the file and finishes")
+      const stored = JSON.parse(readFileSync(join(repo, ".git", "chert", "review-state.json"), "utf8")) as {
+        approvals: Record<string, unknown>
+      }
+      assert(stored.approvals["src/a.ts"] !== undefined, "phaseF approval is persisted by patch hash")
+    } finally {
+      await setup.dispose().catch(() => {})
+    }
+  } finally {
+    process.chdir(orig)
+    if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR
+    else process.env.CHERT_CONFIG_DIR = prevCfg
+    if (prevPath === undefined) delete process.env.PATH
+    else process.env.PATH = prevPath
+    rmSync(repo, { recursive: true, force: true })
+    rmSync(cfg, { recursive: true, force: true })
+    rmSync(binDir, { recursive: true, force: true })
+  }
+}
+
+/** A fake opencode that speaks the walk protocol without a model. */
+const WALK_FAKE = `#!/usr/bin/env bun
+const args = process.argv.slice(2)
+if (args[0] === "--version") {
+  console.log("2.3.0")
+  process.exit(0)
+}
+if (args[0] === "session") {
+  console.log(JSON.stringify([{ id: "ses_author", title: "wrote a2", updated: 2000 }]))
+  process.exit(0)
+}
+const prompt = args[args.length - 1]
+const sessionAt = args.indexOf("--session")
+const sessionId = args.includes("--fork") ? "ses_walk" : sessionAt === -1 ? "ses_new" : args[sessionAt + 1]
+const emit = (text) =>
+  console.log(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text } }))
+const anchor = { side: "new", start: 2, end: 2, quote: "export const a2 = 2" }
+if (args.includes("--fork")) {
+  emit("ready")
+} else if (prompt.includes("Project file:")) {
+  emit(JSON.stringify({
+    protocol: "chert-review/1",
+    path: "src/a.ts",
+    intent: "adds a2",
+    summary: "one line added",
+    walkthrough: [{ anchor, explanation: "the new export" }],
+    concerns: [{ anchor, level: "medium", note: "is it used?" }],
+    assumptions: [],
+    questions: ["why a2?"],
+  }))
+} else if (prompt.includes("plan")) {
+  emit(JSON.stringify({
+    protocol: "chert-review/1",
+    overview: "adds a2",
+    order: [{ path: "src/a.ts", reason: "the change" }],
+  }))
+} else {
+  emit("ready")
+}
+`
+
+/** /walk end to end: fork, plan, file analysis, verified notes. */
+async function phaseWalkTests(): Promise<void> {
+  if (process.platform === "win32") {
+    console.log("phaseWalkTests skipped on win32")
+    return
+  }
+  const repo = mkdtempSync(join(tmpdir(), "chert-walk-smoke-"))
+  const cfg = mkdtempSync(join(tmpdir(), "chert-walk-smoke-cfg-"))
+  const binDir = mkdtempSync(join(tmpdir(), "chert-walk-smoke-bin-"))
+  const orig = process.cwd()
+  const prevCfg = process.env.CHERT_CONFIG_DIR
+  const prevPath = process.env.PATH
+  try {
+    const script = join(binDir, "opencode")
+    writeFileSync(script, WALK_FAKE)
+    const { chmodSync } = await import("node:fs")
+    chmodSync(script, 0o755)
+    process.env.PATH = binDir + ":" + (process.env.PATH ?? "")
+    process.env.CHERT_CONFIG_DIR = cfg
+
+    runGit(repo, ["init", "-b", "main"])
+    runGit(repo, ["config", "user.email", "smoke@example.com"])
+    runGit(repo, ["config", "user.name", "smoke"])
+    mkdirSync(join(repo, "src"), { recursive: true })
+    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\n")
+    runGit(repo, ["add", "."])
+    runGit(repo, ["commit", "-m", "base"])
+    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\nexport const a2 = 2\n")
+
+    process.chdir(repo)
+    await getTreeSitterClient()
+      .initialize()
+      .catch(() => {})
+    const { testRender: render } = await import("@opentui/solid")
+    const { ReviewApp } = await import("../src/tui/app.tsx")
+    // Tall enough for the whole analysis: the pane shows its first lines only.
+    const setup = await render(ReviewApp, { width: 100, height: 50 })
+    try {
+      await setup.renderOnce()
+      await setup.mockInput.pressKeys("/walk".split(""))
+      await setup.mockInput.pressKey("RETURN")
+      await new Promise((r) => setTimeout(r, 1500))
+      await setup.renderOnce()
+      const frame = setup.captureCharFrame()
+      console.log("WALK FRAME:\n" + frame + "\nENDWALK")
+      assert(frame.includes("adds a2"), "walk plan overview reaches the screen")
+      assert(frame.includes("is it used?"), "walk concern reaches the answer pane")
+      assert(frame.includes("L2"), "walk anchor is placed on the changed line")
+      const stored = JSON.parse(readFileSync(join(repo, ".git", "chert", "review-state.json"), "utf8")) as {
+        walks: Record<string, { forkedSessionId: string; mode: string }>
+      }
+      assert(stored.walks.working.forkedSessionId === "ses_walk", "walk stores the forked session")
+      assert(stored.walks.working.mode === "author-context", "walk records author context")
     } finally {
       await setup.dispose().catch(() => {})
     }
@@ -744,6 +855,7 @@ async function main(): Promise<void> {
   try {
     await phaseBTests()
     await phaseFTests()
+    await phaseWalkTests()
     await phaseETests()
     await phaseCTests()
     await phase1Tests()

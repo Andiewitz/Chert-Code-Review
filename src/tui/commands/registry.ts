@@ -50,6 +50,12 @@ export const COMMAND_DEFS: CommandDef[] = [
     takesArg: true,
   },
   {
+    name: "walk",
+    usage: "/walk [session-id|fresh]",
+    description: "guided review: an agent walks you through each file",
+    takesArg: true,
+  },
+  {
     name: "connect",
     usage: "/connect [provider [key]]",
     description: "connector status / save a provider key",
@@ -78,6 +84,7 @@ function buildHelpText(): string {
     "keys:",
     "  Up/Down     previous / next file",
     "  Left/Right  pick an action: Back · messy · safe · Next",
+    "  Space       approve this file and move to the next unapproved one",
     "  Enter       run the picked action",
     "  Space       mark the file reviewed",
     "  h           highlight lines (↑↓ move, Enter select, Esc done)",

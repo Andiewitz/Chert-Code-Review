@@ -49,6 +49,27 @@ import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
 import { loadHighlights, saveHighlights, resolveHighlights } from "../highlights"
 import type { Highlight } from "../highlights"
+import { analysisText } from "../review/format"
+import { writeHandback } from "../review/handback"
+import {
+  clearApproval,
+  emptyState,
+  isApproved,
+  loadReviewState,
+  patchHash,
+  pruneApprovals,
+  saveReviewState,
+  setApproval,
+  sourceKey,
+} from "../review/state"
+import type { ReviewState } from "../review/state"
+import { createWalk } from "../review/walk"
+import type { Walk, WalkFileResult } from "../review/walk"
+import type { AskResponse, PlanResponse } from "../review/protocol"
+import type { HarnessAdapter } from "../harness/types"
+import { createClaudeHarness } from "../harness/claude"
+import { createOpencodeHarness } from "../harness/opencode"
+import { walkCommand } from "./commands/walk"
 
 // ---------------------------------------------------------------------------
 // UI
@@ -97,6 +118,7 @@ const HANDLERS: Record<string, CommandHandler> = {
   log: logCommand,
   highlights: highlightsCommand,
   export: exportCommand,
+  walk: walkCommand,
   connect: connectCommand,
   disconnect: disconnectCommand,
   use: useCommand,
@@ -162,7 +184,13 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const [answerIsError, setAnswerIsError] = createSignal(false)
   const [focus, setFocus] = createSignal<"files" | "code">("files")
   const [codeCursor, setCodeCursor] = createSignal(0)
-  const [reviewed, setReviewed] = createSignal(new Set<string>())
+  // Approvals live in review-state.json; the counter makes their reads reactive.
+  const [approvalsVersion, setApprovalsVersion] = createSignal(0)
+  let reviewState: ReviewState = emptyState()
+  let patchHashes = new Map<string, string>()
+  const [walkIntent, setWalkIntent] = createSignal("")
+  const [walkSession, setWalkSession] = createSignal<string | null>(null)
+  let walk: Walk | null = null
   const [highlights, setHighlights] = createSignal<Highlight[]>([])
   const [resolvedHighlights, setResolvedHighlights] = createSignal(
     new Map<string, { startRow: number; endRow: number; moved: boolean } | null>(),
@@ -379,34 +407,29 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     patchCache.clear()
     patchFor = ""
     setSelected(0)
-    // before overwriting, compute reviewed files that changed
-    let unChecked = 0
-    // Reconciliation is informational: failing it only loses the
-    // "reviewed files changed" warning.
-    bestEffort("reconcile reviewed files", () => {
-      const oldSet = reviewed()
-      const newFiles = listChangedFiles(cwd(), reviewSource())
-      for (const k of oldSet) {
-        const [path, oldHash] = k.split("\u0000")
-        const f = newFiles.find((x) => x.path === path)
-        if (f) {
-          const p = loadPatch(cwd(), f, reviewSource())
-          if (String(Bun.hash(p)) !== oldHash) unChecked++
-        }
-      }
-    })
+    reviewState = loadReviewState(cwd())
     setQueue([])
     setFileMemory(new Map())
     setAction(3)
     setMenuOpen(false)
-    if (unChecked > 0) setStatus(`${unChecked} reviewed files changed and were un-checked`)
     setAllFilesOpen(false)
     setAnswerOpen(false)
     setAnswerFile("")
     setAnswerIsError(false)
     try {
       setHighlights(loadHighlights(cwd()))
-      setFiles(listChangedFiles(cwd(), reviewSource()))
+      const changed = listChangedFiles(cwd(), reviewSource())
+      setFiles(changed)
+      patchHashes = new Map(
+        changed.map((f) => [f.path, patchHash(tryOr(() => loadPatch(cwd(), f, reviewSource()), ""))]),
+      )
+      // A changed patch silently stops being approved; report how many.
+      const dropped = pruneApprovals(reviewState, patchHashes)
+      if (dropped > 0) {
+        bestEffort("save pruned approvals", () => saveReviewState(cwd(), reviewState))
+        setStatus(`${dropped} approved files changed and need a fresh Space`)
+      }
+      setApprovalsVersion((v) => v + 1)
       // currentBranch(cwd()) already reports "no commits" for a HEAD-less repo.
       setBranch(tryOr(() => currentBranch(cwd()), "no commits"))
     } catch (error) {
@@ -525,7 +548,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const q = queue()
     const i = q.indexOf(cur ?? "")
     if (i === -1 || i === q.length - 1) {
-      setView("done")
+      finishReview()
       return
     }
     goToFile(q[i + 1])
@@ -543,6 +566,200 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const mem = new Map(fileMemory())
     mem.set(path, "asked")
     setFileMemory(mem)
+  }
+
+  function approvalHash(path: string): string {
+    return patchHashes.get(path) ?? ""
+  }
+
+  function isFileApproved(path: string): boolean {
+    return isApproved(reviewState, path, approvalHash(path))
+  }
+
+  function persistReviewState(): void {
+    try {
+      saveReviewState(cwd(), reviewState)
+    } catch (error) {
+      setStatus(`could not save review state: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /** Space: approve or un-approve, then move to the next unapproved file. */
+  function toggleApproval(): void {
+    const f = file()
+    if (f === undefined) return
+    const hash = approvalHash(f.path)
+    const wasApproved = isApproved(reviewState, f.path, hash)
+    if (wasApproved) clearApproval(reviewState, f.path)
+    else setApproval(reviewState, f.path, hash)
+    persistReviewState()
+    setApprovalsVersion((v) => v + 1)
+    setStatus(wasApproved ? `un-approved ${f.path}` : `approved ${f.path}`)
+    if (!wasApproved) nextUnapproved()
+  }
+
+  /** The next file without a matching approval, or the end of the review. */
+  function nextUnapproved(): void {
+    const list = files() ?? []
+    for (let step = 1; step <= list.length; step++) {
+      const index = (selected() + step) % list.length
+      if (!isFileApproved(list[index].path)) {
+        selectFile(index)
+        return
+      }
+    }
+    finishReview()
+  }
+
+  function finishReview(): void {
+    const path = tryOr(() => writeHandback(cwd(), highlights(), walk?.sessionId() ?? undefined), null)
+    setView("done")
+    if (path !== null) setStatus(`notes written to ${path}`)
+  }
+
+  function approvedCount(): number {
+    approvalsVersion()
+    let n = 0
+    for (const f of files() ?? []) if (isFileApproved(f.path)) n++
+    return n
+  }
+
+  /** The newest installed harness, or null when neither CLI is there. */
+  function chooseHarness(): HarnessAdapter | null {
+    const opencode = createOpencodeHarness()
+    if (opencode.detect().available) return opencode
+    const claude = createClaudeHarness()
+    return claude.detect().available ? claude : null
+  }
+
+  function walkOnPlan(plan: PlanResponse): void {
+    setWalkIntent(plan.overview)
+    setQueue(plan.order.map((entry) => entry.path))
+    addEntry("system", `Walk: ${plan.overview}`)
+    setView("review")
+    const first = plan.order[0]?.path
+    if (first !== undefined) {
+      goToFile(first)
+      void walk?.analyze(first)
+    }
+  }
+
+  function walkOnFile(result: WalkFileResult): void {
+    // Re-analysis of one file replaces its earlier agent highlights.
+    const kept = highlights().filter((h) => !(h.by === "ai" && h.path === result.analysis.path))
+    persistHighlights([...kept, ...result.highlights])
+    const text = analysisText(result)
+    addEntry("agent", text)
+    setLastQuestion("")
+    setLastAnswer(text)
+    setAnswerFile(result.analysis.path)
+    setAnswerIsError(false)
+    setAnswerOpen(true)
+    setWalkIntent(result.analysis.intent)
+    const order = queue()
+    const next = order.slice(order.indexOf(result.analysis.path) + 1).find((path) => !isFileApproved(path))
+    if (next !== undefined) walk?.prefetch(next)
+  }
+
+  /** An explicit session id, `fresh` for none, else the project's newest. */
+  function walkBaseSession(harness: HarnessAdapter, arg: string): string | undefined {
+    if (arg === "fresh") return undefined
+    if (arg !== "") return arg
+    return harness.listSessions(cwd())[0]?.id
+  }
+
+  function walkKeyFor(): string {
+    const src = reviewSource()
+    const detail = src.kind === "commit" ? src.sha : src.kind === "branch" ? `${src.base}...${src.mergeBase}` : ""
+    return sourceKey(src.kind, detail)
+  }
+
+  function beginWalk(harness: HarnessAdapter, list: ReviewFile[], baseSessionId: string | undefined): Walk {
+    return createWalk({
+      harness,
+      projectRoot: cwd(),
+      files: list,
+      source: reviewSource(),
+      sourceLabel: sourceLabel(),
+      walkKey: walkKeyFor(),
+      baseSessionId,
+      state: reviewState,
+      persist: persistReviewState,
+      callbacks: {
+        status: (text) => setStatus(text),
+        error: (message) => {
+          addEntry("error", message)
+          setStatus("")
+        },
+        plan: walkOnPlan,
+        file: walkOnFile,
+        ask: (answer, anchors) => {
+          if (anchors.length > 0) persistHighlights([...highlights(), ...anchors])
+          addEntry("agent", answer.text)
+          setLastAnswer(answer.text)
+          setAnswerIsError(false)
+          setAnswerOpen(true)
+          setAnswerFile(file()?.path ?? "")
+        },
+      },
+    })
+  }
+
+  /**
+   * /walk: fork a harness session and let it narrate each changed file. With
+   * no argument the newest session for this project is used, `fresh` starts
+   * without author context, and anything else is a session id.
+   */
+  async function startWalk(arg: string): Promise<void> {
+    const list = files() ?? []
+    if (list.length === 0) {
+      addEntry("system", "Nothing to walk through: no changed files in this review.")
+      setView("log")
+      return
+    }
+    const harness = chooseHarness()
+    if (harness === null) {
+      addEntry("error", "No harness found. Install opencode or Claude Code, then run /walk again.")
+      setView("log")
+      return
+    }
+    const baseSessionId = walkBaseSession(harness, arg)
+    addEntry(
+      "system",
+      baseSessionId === undefined
+        ? `No author session to fork; starting a fresh ${harness.label} session.`
+        : `Forking ${harness.label} session ${baseSessionId}.`,
+    )
+    setView("review")
+    walk = beginWalk(harness, list, baseSessionId)
+    await walk.start()
+    setWalkSession(walk.sessionId())
+  }
+
+  /** A question for the forked session, shown in the same answer pane. */
+  async function askWalkAgent(prompt: string): Promise<void> {
+    if (walk === null) return
+    addEntry("user", prompt)
+    setLastQuestion(prompt)
+    setLastAnswer("")
+    setAnswerIsError(false)
+    setBusy(true)
+    const startedAt = Date.now()
+    const tick = () => setStatus(`Thinking… ${Math.floor((Date.now() - startedAt) / 1000)}s`)
+    tick()
+    const interval = setInterval(tick, 1000)
+    try {
+      await walk.ask(prompt, file()?.path)
+    } finally {
+      clearInterval(interval)
+      setBusy(false)
+      setStatus("")
+    }
+  }
+
+  function askCurrent(prompt: string): void {
+    if (walk !== null) void askWalkAgent(prompt)
+    else void askAgent(prompt)
   }
 
   function stepHeader(): string {
@@ -647,7 +864,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const cur = file()?.path
     if (cur) markAsked(cur)
     setAction(3)
-    void askAgent(raw)
+    askCurrent(raw)
   }
 
   /**
@@ -741,6 +958,11 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     if (root === undefined) return undefined
     const savedRoot = hasProject() ? cwd() : null
     if (savedRoot !== null && savedRoot !== root) previousProject = savedRoot
+    // A walk belongs to one project; leaving it ends the conversation.
+    walk?.close()
+    walk = null
+    setWalkSession(null)
+    setWalkIntent("")
     const saved = loadSavedReviewSource(root)
     if (saved) setReviewSource(saved)
     setCwd(root)
@@ -801,6 +1023,9 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       },
       activeLabel,
       connectorsStatus,
+      startWalk: (arg) => {
+        void startWalk(arg)
+      },
     }
   }
 
@@ -935,8 +1160,11 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       files: () => files() ?? [],
       selectFile,
       patch,
-      reviewed,
-      setReviewed,
+      approved: () => {
+        const f = file()
+        return f !== undefined && isFileApproved(f.path)
+      },
+      toggleApproval,
       scrollAllFiles: (y) => bestEffort("scroll all files", () => allFilesScrollRef?.scrollTo({ x: 0, y })),
 
       moveTreeIndex,
@@ -995,9 +1223,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       case 6: // Next unreviewed file
         setMenuOpen(false)
         {
-          const unrev = (files() ?? []).find(
-            (f) => !reviewed().has(`${f.path}\u0000${Bun.hash(patchCache.get(f.path) ?? "")}`),
-          )
+          const unrev = (files() ?? []).find((f) => !isFileApproved(f.path))
           if (unrev) {
             selectFile((files() ?? []).indexOf(unrev))
             setFocus("files")
@@ -1096,7 +1322,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       }
       markAsked(cur)
       setAction(3)
-      void askAgent(QUESTIONS.messy(cur))
+      askCurrent(QUESTIONS.messy(cur))
       return
     }
     if (i === 2) {
@@ -1106,7 +1332,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       }
       markAsked(cur)
       setAction(3)
-      void askAgent(QUESTIONS.safe(cur))
+      askCurrent(QUESTIONS.safe(cur))
       return
     }
     if (i === 3) {
@@ -1127,7 +1353,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     if (focus() === "code") return "↑↓ line · Enter select · Esc done · Ctrl+C quit"
     if (answerOpen() && answerFile() === (file()?.path ?? ""))
       return "↑↓ file · ←→ action · Enter run · PgUp/PgDn answer · Esc menu"
-    return "↑↓ file · ←→ action · Enter run · Space reviewed · h highlight · Esc menu"
+    return "↑↓ file · ←→ action · Enter run · Space approve · h highlight · Esc menu"
   }
 
   // Keep the log pinned to the bottom as entries arrive.
@@ -1199,20 +1425,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     return `${who} \u00b7 ${note}`
   })
 
-  function reviewedKeyFor(f: ReviewFile | undefined): string {
-    if (!f) return ""
-    const p = patchCache.get(f.path) ?? ""
-    return `${f.path}\u0000${Bun.hash(p)}`
-  }
-
-  const reviewedCount = createMemo(() => {
-    const set = reviewed()
-    let n = 0
-    for (const f of files() ?? []) {
-      if (set.has(`${f.path}\u0000${Bun.hash(patchCache.get(f.path) ?? "")}`)) n++
-    }
-    return n
-  })
+  const reviewedCount = createMemo(approvedCount)
 
   const suggestionWindow = createMemo(() => {
     const list = visibleSuggestions()
@@ -1432,7 +1645,10 @@ export function ReviewApp(props: ReviewAppProps = {}) {
                             <For each={files() ?? []}>
                               {(f, i) => {
                                 const active = () => i() === selected()
-                                const done = () => reviewed().has(reviewedKeyFor(f))
+                                const done = () => {
+                                  approvalsVersion()
+                                  return isFileApproved(f.path)
+                                }
                                 const glyph = () =>
                                   f.status === "deleted"
                                     ? "D"
@@ -1615,6 +1831,11 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           >{` You looked at ${files()?.length ?? 0} files:  asked about ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length},  skipped ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length} without asking.`}</text>
           <Show when={(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length === 0}>
             <text fg={COLORS().dim}>You asked about every file.</text>
+          </Show>
+          <Show when={walkSession() !== null}>
+            <text fg={COLORS().dim}>
+              {`Review session ${walkSession()}. Your notes are yours; chert never writes into the original session.`}
+            </text>
           </Show>
           <box height={1} />
           <text fg={COLORS().purple} attributes={ATTR.bold}>

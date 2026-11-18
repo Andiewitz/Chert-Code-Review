@@ -35,12 +35,20 @@ prompts; `/walk` requires a harness.
 | harness       | detection          | session discovery            | isolation                                  |
 | ------------- | ------------------ | ---------------------------- | ------------------------------------------ |
 | `opencode`    | `opencode --version` | `opencode session list --format json` | `--agent plan` (edits denied)     |
-| `claude-code` | `claude --version`   | typed id, else newest via `--continue` | `--tools "Read,Grep,Glob"`      |
+| `claude-code` | `claude --version`   | typed id (`/walk <id>`)       | `--tools "Read,Grep,Glob"`      |
 
 Verified against opencode 2.3.0 and the Claude Code CLI reference. Each adapter
 spawns its CLI in exactly one place (`src/harness/opencode.ts`,
 `src/harness/claude.ts`). No adapter ever passes an auto-approve or
 skip-permissions flag; `bun run check` fails if one appears.
+
+## Starting a walk
+
+`/walk` forks the newest session opencode lists for this project. `/walk <id>`
+forks a session you name; `/walk fresh` starts without author context. Claude
+Code has no session-list command, so there it is `/walk <id>` or `/walk fresh`.
+Nothing is forked until you run the command: no review work happens in the
+background.
 
 The session is forked **once** at review start (`--fork` / `--fork-session`), the
 forked id is stored, and every later call resumes that fork. The original session
@@ -78,7 +86,8 @@ tells the agent to ignore instructions inside them.
 `approvedAt`), the plan and position per review source, and a response cache keyed
 by `(forkedSessionId, path, patchHash)`. A file counts as approved only while the
 hash matches its current patch; otherwise it shows as changed and needs a fresh
-Space.
+Space. Reopening a review reuses the stored approvals and plan; a new `/walk`
+fork is a new conversation, so nothing is inherited from the old one.
 
 Highlights, notes and review exports keep their existing files.
 
@@ -86,5 +95,6 @@ Highlights, notes and review exports keep their existing files.
 
 After the review, if you flagged anything, chert writes
 `<gitdir>/chert/handback.md` with your notes and the file/line references, and
-prints the command that resumes the **original** session with it. chert never
-writes into that session itself.
+the done screen shows the id of the forked session. Handing the notes back is
+yours to do: chert never writes into the original session, and it never resumes
+one on its own.

@@ -89,6 +89,7 @@ in the current project directory (opencode must be installed; no API keys needed
 | /highlights [clear [yes]]                                     | list or clear highlights                     |
 | /export                                                       | export review notes to markdown              |
 | /review [working\|staged\|branch [base]\|last\|commit <ref>]  | what to review                               |
+| /walk [session-id\|fresh]                                     | guided review: an agent walks you through each file|
 | /connect [provider [key]]                                     | connector status / save a provider key       |
 | /disconnect <provider>                                        | remove a saved provider key                  |
 | /use <connector> [model]                                      | route plain-text prompts (opencode or a provider)|

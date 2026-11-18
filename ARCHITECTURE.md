@@ -14,8 +14,8 @@ src/tui/keyboard.ts     handleKeyPress(ctx, key): every keybinding, in a single
 src/tui/commands/       one module per command family + the command registry
 src/tui/components/     presentational views (props are getters, never
                         destructured, so Solid reactivity survives)
-src/tui/services/       the agent turn: prompt -> answer, plus its rendering
-                        helpers
+src/tui/services/       one conversation turn: prompt -> answer, plus its
+                        rendering helpers
 src/tui/theme.ts        colour palettes, attribute constants, theme persistence
 src/tui/format.ts       string formatting shared by the views
 ```
@@ -23,8 +23,12 @@ src/tui/format.ts       string formatting shared by the views
 Data layer (no renderer imports, unit-testable):
 
 ```
-src/git.ts              every git invocation goes through run(), which enforces
+src/git/                every git invocation goes through run(), which enforces
                         the read-only allowlist; diff source resolution
+src/harness/            one adapter per coding CLI (opencode, Claude Code), the
+                        process lifecycle, and a fake for tests
+src/review/             the walk protocol, validators, anchor placement,
+                        prompts, review-state persistence and the tree guard
 src/diffrows.ts         patch text -> Row[] (hunks, line numbers, sides)
 src/tree.ts             flat file list -> nested tree lines
 src/highlights.ts       highlight model, resolution against a diff, caps,
