@@ -35,6 +35,7 @@ import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
 import { HomeScreen } from "./components/home-screen"
 import { RowList } from "./components/row-list"
 import { Wordmark } from "./components/wordmark"
+import { connectCommand, disconnectCommand, modelsCommand, useCommand } from "./commands/connectors"
 import {
   cdCommand,
   cwdCommand,
@@ -122,6 +123,10 @@ const HANDLERS: Record<string, CommandHandler> = {
   log: logCommand,
   highlights: highlightsCommand,
   export: exportCommand,
+  connect: connectCommand,
+  disconnect: disconnectCommand,
+  use: useCommand,
+  models: modelsCommand,
 }
 
 const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
@@ -891,131 +896,8 @@ export function ReviewApp() {
       handler(buildCommandContext(rest))
       return
     }
-
-    switch (def.name) {
-      case "connect": {
-        setView("log")
-        if (rest === "") {
-          addEntry("system", connectorsStatus())
-          return
-        }
-        const [providerToken, ...keyParts] = rest.split(/\s+/)
-        const provider = findProvider(providerToken)
-        if (!provider) {
-          addEntry(
-            "error",
-            `unknown provider "${providerToken}" — providers: ${PROVIDERS.map((p) => p.id).join(", ")}`,
-          )
-          return
-        }
-        const key = keyParts.join(" ").trim()
-        if (key === "") {
-          const source = keySource(provider.id)
-          addEntry(
-            "system",
-            [
-              `${provider.label} (${provider.id})`,
-              `  key: ${source === "saved" ? "saved" : source === "env" ? `env (${provider.envKeys.join(" or ")})` : "not configured"}`,
-              `  default model: ${provider.defaultModel}`,
-              `  get a key: ${provider.keyUrl}`,
-              `  save it: /connect ${provider.id} <key>`,
-            ].join("\n"),
-          )
-          return
-        }
-        try {
-          saveProviderKey(provider.id, key)
-          addEntry("system", `saved ${provider.label} key`)
-          setStatus(`✓ ${provider.id} connected`)
-        } catch (error) {
-          addEntry("error", error instanceof Error ? error.message : String(error))
-        }
-        return
-      }
-      case "disconnect": {
-        setView("log")
-        const provider = findProvider(rest.trim())
-        if (!provider) {
-          addEntry(
-            "error",
-            `unknown provider "${rest}" — providers: ${PROVIDERS.map((p) => p.id).join(", ")}`,
-          )
-          return
-        }
-        try {
-          clearProviderKey(provider.id)
-          addEntry("system", `cleared saved key for ${provider.label} (env vars still apply)`)
-          setStatus("")
-        } catch (error) {
-          addEntry("error", error instanceof Error ? error.message : String(error))
-        }
-        return
-      }
-      case "use": {
-        const [id, ...modelParts] = rest.split(/\s+/)
-        if (id === "" || id === "opencode") {
-          setConnector("opencode")
-          setModel(undefined)
-          setActive("opencode")
-          setStatus("connector: opencode")
-          return
-        }
-        setView("log")
-        const provider = findProvider(id)
-        if (!provider) {
-          addEntry(
-            "error",
-            `unknown connector "${id}" — connectors: opencode, ${PROVIDERS.map((p) => p.id).join(", ")}`,
-          )
-          return
-        }
-        if (resolveKey(provider.id) === undefined) {
-          addEntry("error", `no API key for ${provider.label} — /connect ${provider.id} <key> first`)
-          return
-        }
-        const newModel = modelParts.join(" ").trim()
-        setConnector(provider.id)
-        setModel(newModel === "" ? undefined : newModel)
-        setActive(provider.id, newModel === "" ? undefined : newModel)
-        setStatus(`connector: ${activeLabel()}`)
-        return
-      }
-      case "models": {
-        const provider =
-          findProvider(rest.trim()) ?? (connector() !== "opencode" ? findProvider(connector()) : undefined)
-        if (!provider) {
-          addEntry("error", `usage: /models <provider> — providers: ${PROVIDERS.map((p) => p.id).join(", ")}`)
-          setView("log")
-          return
-        }
-        const key = resolveKey(provider.id)
-        if (key === undefined) {
-          addEntry("error", `no API key for ${provider.label} — /connect ${provider.id} <key> first`)
-          setView("log")
-          return
-        }
-        setView("log")
-        setStatus(`${provider.id}: listing models…`)
-        void listModels(provider, key)
-          .then((ids) => {
-            addEntry(
-              "system",
-              ids.length === 0
-                ? `${provider.label}: no models`
-                : `${provider.label} models:\n${tailLines(ids.join("\n"), MAX_COMMAND_OUTPUT_LINES)}`,
-            )
-            setStatus("")
-          })
-          .catch((error) => {
-            addEntry("error", error instanceof Error ? error.message : String(error))
-            setStatus("")
-          })
-        return
-      }
-      default:
-        addEntry("error", `unknown command /${name} — try /help`)
-        setView("log")
-    }
+    addEntry("error", `unknown command /${name} — try /help`)
+    setView("log")
   }
 
   // Keyboard handling: no modes. Box empty => screen keys. Box has text => editing.
