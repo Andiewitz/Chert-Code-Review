@@ -10,7 +10,7 @@
 // Synchronous on purpose: git calls are fast, and synchronous state updates
 // render deterministically regardless of the host renderer's event loop.
 
-import { readFileSync } from "node:fs"
+import { readFileSync, statSync } from "node:fs"
 
 export type FileStatus = "added" | "modified" | "deleted" | "untracked"
 
@@ -98,8 +98,13 @@ function statusFromCode(code: string): FileStatus {
   }
 }
 
+/** Untracked files above this size get a placeholder patch instead of a diff. */
+const MAX_UNTRACKED_PATCH_BYTES = 256 * 1024
+
 function countLines(path: string): number {
   try {
+    // Counting a huge untracked file is not worth reading it into memory.
+    if (statSync(path).size > MAX_UNTRACKED_PATCH_BYTES) return 0
     const buf = readFileSync(path)
     if (buf.length === 0) return 0
     let lines = 0
@@ -355,14 +360,12 @@ export function mergeBase(a: string, b: string): string {
 }
 
 function synthesizedAddedPatch(path: string): string {
-  let content = ""
+  let content = Buffer.alloc(0)
   try {
-    content = readFileSync(path).toString()
+    content = readFileSync(path)
   } catch {
-    // unreadable
+    // unreadable: fall through to an empty patch
   }
-  const lines = content.split("\n")
-  if (lines[lines.length - 1] === "") lines.pop()
 
   const header = [
     `diff --git a/${path} b/${path}`,
@@ -371,6 +374,20 @@ function synthesizedAddedPatch(path: string): string {
     "--- /dev/null",
     `+++ b/${path}`,
   ].join("\n")
+
+  // Untracked files are read whole, so a huge one would build a patch with
+  // tens of thousands of rows and stall the viewer.
+  if (content.length > MAX_UNTRACKED_PATCH_BYTES) {
+    return `${header}\n… file is ${Math.round(content.length / 1024)} KiB, too large to show\n`
+  }
+  // A NUL byte means binary; say what git says for a tracked binary so the
+  // viewer can style and skip it the same way.
+  if (content.includes(0)) {
+    return `${header}\nBinary files /dev/null and b/${path} differ\n`
+  }
+
+  const lines = content.toString().split("\n")
+  if (lines[lines.length - 1] === "") lines.pop()
 
   if (lines.length === 0) {
     return `${header}\n@@ -0,0 +0,0 @@\n`
