@@ -105,9 +105,18 @@ const HANDLERS: Record<string, CommandHandler> = {
 
 const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
 
-export function ReviewApp() {
+export interface ReviewAppProps {
+  /** Repository root to open on mount; the TUI starts at the home screen without one. */
+  initialRoot?: string
+}
+
+export function ReviewApp(props: ReviewAppProps = {}) {
   const renderer = useRenderer()
-  const initialRoot = tryOr(() => resolveProjectRoot(process.cwd()), undefined)
+
+  // The CLI passes the root explicitly. Direct mounts (the smoke test) fall
+  // back to the process directory once, here, and never again: every later git
+  // call takes the root from the cwd() signal.
+  const bootstrapRoot = props.initialRoot ?? tryOr(() => resolveProjectRoot(process.cwd()), undefined)
 
   const [files, setFiles] = createSignal<ReviewFile[] | null>(null)
   const [loadError, setLoadError] = createSignal<string | null>(null)
@@ -116,12 +125,12 @@ export function ReviewApp() {
   const [treeLines, setTreeLines] = createSignal<TreeLine[]>([])
   const [treeIndex, setTreeIndex] = createSignal(0)
   const [view, setView] = createSignal<MainView>("review")
-  const [hasProject, setHasProject] = createSignal(initialRoot !== undefined)
+  const [hasProject, setHasProject] = createSignal(bootstrapRoot !== undefined)
   const [reviewSource, setReviewSource] = createSignal<ReviewSource>({ kind: "working" })
   const [branch, setBranch] = createSignal("no commits")
   const [transcript, setTranscript] = createSignal<Array<{ kind: EntryKind; text: string }>>([])
   const [status, setStatus] = createSignal("")
-  const [cwd, setCwd] = createSignal(process.cwd())
+  const [cwd, setCwd] = createSignal(bootstrapRoot ?? "")
   const [connector, setConnector] = createSignal(getActive().connector)
   const [model, setModel] = createSignal<string | undefined>(getActive().model)
   const [inputValue, setInputValue] = createSignal("")
@@ -180,7 +189,7 @@ export function ReviewApp() {
       case "staged":
         return "reviewing: staged changes"
       case "branch":
-        return `reviewing: everything on ${currentBranch()} since ${src.base}`
+        return `reviewing: everything on ${currentBranch(cwd())} since ${src.base}`
       case "commit": {
         const subj = truncateEnd(src.subject, 40)
         return `reviewing: commit ${src.sha.slice(0, 7)}: ${subj}`
@@ -279,7 +288,7 @@ export function ReviewApp() {
       items.push({ key: t.key, label: `/review ${t.key}`, description: t.description, insert: t.insert })
     }
     if (hasProject()) {
-      for (const c of listRecentCommits()) {
+      for (const c of listRecentCommits(cwd())) {
         const short = c.sha.slice(0, 7)
         items.push({ key: c.sha, label: short, description: c.subject, insert: `/review commit ${c.sha}` })
       }
@@ -350,7 +359,7 @@ export function ReviewApp() {
     const parsed = readJson<Record<string, ReviewSource>>(reviewSourcesPath())
     const src = parsed?.[root]
     if (!src || typeof src.kind !== "string") return null
-    if (src.kind === "commit" && resolveSha(src.sha) === null) return null
+    if (src.kind === "commit" && resolveSha(cwd(), src.sha) === null) return null
     return src
   }
   function saveReviewSource(root: string, src: ReviewSource): void {
@@ -377,12 +386,12 @@ export function ReviewApp() {
     // "reviewed files changed" warning.
     bestEffort("reconcile reviewed files", () => {
       const oldSet = reviewed()
-      const newFiles = listChangedFiles(reviewSource())
+      const newFiles = listChangedFiles(cwd(), reviewSource())
       for (const k of oldSet) {
         const [path, oldHash] = k.split("\u0000")
         const f = newFiles.find((x) => x.path === path)
         if (f) {
-          const p = loadPatch(f, reviewSource())
+          const p = loadPatch(cwd(), f, reviewSource())
           if (String(Bun.hash(p)) !== oldHash) unChecked++
         }
       }
@@ -397,10 +406,10 @@ export function ReviewApp() {
     setAnswerFile("")
     setAnswerIsError(false)
     try {
-      setHighlights(loadHighlights())
-      setFiles(listChangedFiles(reviewSource()))
-      // currentBranch() already reports "no commits" for a HEAD-less repo.
-      setBranch(tryOr(() => currentBranch(), "no commits"))
+      setHighlights(loadHighlights(cwd()))
+      setFiles(listChangedFiles(cwd(), reviewSource()))
+      // currentBranch(cwd()) already reports "no commits" for a HEAD-less repo.
+      setBranch(tryOr(() => currentBranch(cwd()), "no commits"))
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error))
       setBranch("no commits")
@@ -412,7 +421,7 @@ export function ReviewApp() {
       // A failed rebuild leaves the previous tree on screen; refreshing again
       // is one keypress away.
       bestEffort("refresh tree", () => {
-        setTreeLines(buildTreeLines(changedGlyphs()))
+        setTreeLines(buildTreeLines(cwd(), changedGlyphs()))
         setTreeIndex(0)
       })
     }
@@ -438,7 +447,7 @@ export function ReviewApp() {
       return
     }
     try {
-      const result = loadPatch(current, reviewSource())
+      const result = loadPatch(cwd(), current, reviewSource())
       patchCache.set(current.path, result)
       setPatch(result)
       patchFor = current.path
@@ -463,7 +472,7 @@ export function ReviewApp() {
 
   function loadTree(): void {
     try {
-      setTreeLines(buildTreeLines(changedGlyphs()))
+      setTreeLines(buildTreeLines(cwd(), changedGlyphs()))
       setTreeIndex(0)
       setView("tree")
     } catch (error) {
@@ -546,8 +555,8 @@ export function ReviewApp() {
     return `${pos} of ${total} files · ${reviewedCount()} reviewed`
   }
 
-  if (initialRoot) {
-    const saved = loadSavedReviewSource(initialRoot)
+  if (bootstrapRoot !== undefined) {
+    const saved = loadSavedReviewSource(bootstrapRoot)
     if (saved) setReviewSource(saved)
     load()
   }
@@ -651,7 +660,7 @@ export function ReviewApp() {
   function persistHighlights(next: Highlight[]): boolean {
     setHighlights(next)
     try {
-      const result = saveHighlights(next)
+      const result = saveHighlights(cwd(), next)
       if (result.overCap && !capWarningShown) {
         capWarningShown = true
         setStatus(`over ${MAX_SAVED_HIGHLIGHTS} highlights: yours are all kept, new AI ones will not be`)
@@ -668,7 +677,7 @@ export function ReviewApp() {
     const target = (files() ?? []).find((f) => f.path === path)
     if (target === undefined) return undefined
     // The caller reports the file in its skipped list when this is undefined.
-    return tryOr(() => parsePatch(loadPatch(target, reviewSource())), undefined)
+    return tryOr(() => parsePatch(loadPatch(cwd(), target, reviewSource())), undefined)
   }
 
   async function askAgent(prompt: string): Promise<void> {
@@ -780,7 +789,7 @@ export function ReviewApp() {
       highlights,
       persistHighlights,
       clearHighlights: () => {
-        saveHighlights([])
+        saveHighlights(cwd(), [])
         setHighlights([])
         setResolvedHighlights(new Map())
       },
@@ -1665,11 +1674,12 @@ export function ReviewApp() {
 }
 
 export async function launch(startDir?: string): Promise<void> {
-  // A failure here leaves the home screen up, which is the correct fallback.
-  bestEffort("open initial project", () => openProject(startDir ?? process.cwd()))
+  // CLI boundary: the only place that reads the process working directory to
+  // decide what to open. A failure leaves the home screen up.
+  const root = tryOr(() => openProject(startDir ?? process.cwd()), undefined)
   // Syntax highlighting is a nicety; the TUI works without tree-sitter.
   await getTreeSitterClient()
     .initialize()
     .catch(() => {})
-  await render(() => <ReviewApp />, { exitOnCtrlC: true })
+  await render(() => <ReviewApp initialRoot={root} />, { exitOnCtrlC: true })
 }

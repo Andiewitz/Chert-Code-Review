@@ -37,30 +37,40 @@ export function reviewCommand(ctx: CommandContext): void {
     return
   }
   if (sub === "last") {
-    const sha = resolveSha("HEAD")
+    const sha = resolveSha(ctx.projectRoot(), "HEAD")
     if (sha === null) {
       ctx.addEntry("error", "No commits yet.")
       ctx.setView("log")
       return
     }
-    ctx.applyReviewSource({ kind: "commit", sha, parent: commitParent(sha), subject: commitSubject(sha) })
+    ctx.applyReviewSource({
+      kind: "commit",
+      sha,
+      parent: commitParent(ctx.projectRoot(), sha),
+      subject: commitSubject(ctx.projectRoot(), sha),
+    })
     ctx.setStatus(`reviewing: commit ${sha.slice(0, 7)}`)
     return
   }
   if (sub === "commit") {
     const ref = tokens[1] ?? ""
-    if (ref === "" || !validateRef(ref)) {
+    if (ref === "" || !validateRef(ctx.projectRoot(), ref)) {
       ctx.addEntry("error", `Not a valid commit: "${ref}".`)
       ctx.setView("log")
       return
     }
-    const sha = resolveSha(ref)
+    const sha = resolveSha(ctx.projectRoot(), ref)
     if (sha === null) {
       ctx.addEntry("error", `Could not resolve "${ref}".`)
       ctx.setView("log")
       return
     }
-    ctx.applyReviewSource({ kind: "commit", sha, parent: commitParent(sha), subject: commitSubject(sha) })
+    ctx.applyReviewSource({
+      kind: "commit",
+      sha,
+      parent: commitParent(ctx.projectRoot(), sha),
+      subject: commitSubject(ctx.projectRoot(), sha),
+    })
     ctx.setStatus(`reviewing: commit ${sha.slice(0, 7)}`)
     return
   }
@@ -68,27 +78,27 @@ export function reviewCommand(ctx: CommandContext): void {
     const baseArg = tokens.slice(1).join(" ").trim()
     let base: string | null
     if (baseArg !== "") {
-      if (!validateRef(baseArg)) {
+      if (!validateRef(ctx.projectRoot(), baseArg)) {
         ctx.addEntry("error", `Not a valid branch: "${baseArg}".`)
         ctx.setView("log")
         return
       }
       base = baseArg
     } else {
-      base = resolveReviewBase()
+      base = resolveReviewBase(ctx.projectRoot())
     }
     if (base === null) {
       ctx.addEntry("error", "I couldn't find the main branch. Type /review branch <name>.")
       ctx.setView("log")
       return
     }
-    const current = currentBranch()
+    const current = currentBranch(ctx.projectRoot())
     if (current === base) {
       ctx.addEntry("system", `You're already on ${base}; staying on uncommitted changes.`)
       ctx.setView("log")
       return
     }
-    const split = tryOr(() => mergeBase(current, base), null)
+    const split = tryOr(() => mergeBase(ctx.projectRoot(), current, base), null)
     if (split === null) {
       ctx.addEntry("error", `Could not find where ${current} split from ${base}.`)
       ctx.setView("log")
@@ -168,7 +178,7 @@ export function exportCommand(ctx: CommandContext): void {
 
   const markdown = lines.join("\n")
   try {
-    const dir = join(gitDir(), "chert")
+    const dir = join(gitDir(ctx.projectRoot()), "chert")
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, "last-review.md"), markdown)
     ctx.addEntry("system", `Exported to ${join(dir, "last-review.md")}\n\n${markdown}`)

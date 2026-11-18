@@ -46,12 +46,12 @@ interface TreeNode {
 }
 
 /** Every file in the project, project-relative with "/" separators. */
-function projectFiles(): string[] {
-  if (isGitRepository()) {
-    return listProjectFiles()
+function projectFiles(repoRoot: string): string[] {
+  if (isGitRepository(repoRoot)) {
+    return listProjectFiles(repoRoot)
   }
   const out: string[] = []
-  walkFs(process.cwd(), "", out)
+  walkFs(repoRoot, "", out)
   return out.sort((a, b) => a.localeCompare(b))
 }
 
@@ -76,9 +76,9 @@ function walkFs(dir: string, prefix: string, out: string[]): void {
   }
 }
 
-function buildTree(paths: string[]): TreeNode {
+function buildTree(repoRoot: string, paths: string[]): TreeNode {
   const root: TreeNode = {
-    name: lastPathSegment(process.cwd()),
+    name: lastPathSegment(repoRoot),
     path: "",
     isDir: true,
     children: [],
@@ -133,8 +133,8 @@ function flatten(node: TreeNode, prefix: string, out: TreeLine[], changed: Map<s
 
 /** Build the display lines for the tree view. `changed` maps a project
  * relative path to its status glyph ("M", "D", "??", "A"). */
-export function buildTreeLines(changed: Map<string, string>): TreeLine[] {
-  const paths = projectFiles()
+export function buildTreeLines(repoRoot: string, changed: Map<string, string>): TreeLine[] {
+  const paths = projectFiles(repoRoot)
   // Deleted files may already be gone from the listing; merge any changed
   // path it missed so their markers are never lost.
   for (const path of changed.keys()) {
@@ -144,7 +144,7 @@ export function buildTreeLines(changed: Map<string, string>): TreeLine[] {
     return [{ text: "(no files)", path: undefined, isDir: false }]
   }
 
-  const root = buildTree(paths)
+  const root = buildTree(repoRoot, paths)
   const out: TreeLine[] = [{ text: `${root.name}/`, path: undefined, isDir: true }]
   flatten(root, "", out, changed)
 

@@ -39,12 +39,12 @@ export interface HighlightsFile {
   highlights: Highlight[]
 }
 
-function highlightsPath(): string {
-  return join(gitDir(), "chert", "highlights.json")
+function highlightsPath(root: string): string {
+  return join(gitDir(root), "chert", "highlights.json")
 }
 
-export function loadHighlights(): Highlight[] {
-  const path = highlightsPath()
+export function loadHighlights(root: string): Highlight[] {
+  const path = highlightsPath(root)
   try {
     if (!existsSync(path)) return []
     const raw = readFileSync(path, "utf8")
@@ -90,10 +90,10 @@ export function capHighlights(highlights: Highlight[], max = MAX_SAVED_HIGHLIGHT
 }
 
 /** Persist highlights through {@link capHighlights}. */
-export function saveHighlights(highlights: Highlight[]): SaveHighlightsResult {
+export function saveHighlights(root: string, highlights: Highlight[]): SaveHighlightsResult {
   const { list, droppedAi, overCap } = capHighlights(highlights)
   const data: HighlightsFile = { version: 1, highlights: list }
-  writeJsonAtomic(highlightsPath(), data)
+  writeJsonAtomic(highlightsPath(root), data)
   return { droppedAi, overCap }
 }
 

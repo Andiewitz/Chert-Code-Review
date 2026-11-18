@@ -9,18 +9,18 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 describe("run", () => {
   test("refuses commands outside the read-only allowlist", () => {
-    expect(() => run(["commit", "-m", "nope"])).toThrow("git: command not allowed: commit")
-    expect(() => run(["push"])).toThrow("git: command not allowed: push")
+    expect(() => run(process.cwd(), ["commit", "-m", "nope"])).toThrow("git: command not allowed: commit")
+    expect(() => run(process.cwd(), ["push"])).toThrow("git: command not allowed: push")
   })
 
   test("refuses an empty argument list", () => {
-    expect(() => run([])).toThrow("git: no command given")
+    expect(() => run(process.cwd(), [])).toThrow("git: no command given")
   })
 })
 
 describe("emptyTreeId", () => {
   test("returns git's empty tree id through the allowlisted helper", () => {
-    expect(emptyTreeId()).toBe(EMPTY_TREE)
+    expect(emptyTreeId(process.cwd())).toBe(EMPTY_TREE)
   })
 })
 
@@ -53,9 +53,9 @@ describe("untracked files", () => {
   test("a binary file becomes a placeholder, not NUL bytes in the diff", () => {
     const repo = tempRepo()
     writeFileSync(join(repo, "blob.bin"), Buffer.from([0, 1, 2, 0, 255]))
-    const file = listChangedFiles().find((candidate) => candidate.path === "blob.bin")
+    const file = listChangedFiles(process.cwd()).find((candidate) => candidate.path === "blob.bin")
     expect(file?.status).toBe("untracked")
-    const patch = loadPatch(file!)
+    const patch = loadPatch(process.cwd(), file!)
     expect(patch).not.toContain("\u0000")
     expect(patch).toContain("Binary files /dev/null and b/blob.bin differ")
   })
@@ -63,9 +63,9 @@ describe("untracked files", () => {
   test("an oversized file becomes a placeholder instead of thousands of rows", () => {
     const repo = tempRepo()
     writeFileSync(join(repo, "huge.txt"), "line\n".repeat(80_000))
-    const file = listChangedFiles().find((candidate) => candidate.path === "huge.txt")
+    const file = listChangedFiles(process.cwd()).find((candidate) => candidate.path === "huge.txt")
     expect(file?.additions).toBe(0)
-    const patch = loadPatch(file!)
+    const patch = loadPatch(process.cwd(), file!)
     expect(patch).toContain("too large to show")
     expect(patch.split("\n").length).toBeLessThan(10)
   })
@@ -73,9 +73,9 @@ describe("untracked files", () => {
   test("a small text file is still fully synthesized", () => {
     const repo = tempRepo()
     writeFileSync(join(repo, "small.txt"), "one\ntwo\n")
-    const file = listChangedFiles().find((candidate) => candidate.path === "small.txt")
+    const file = listChangedFiles(process.cwd()).find((candidate) => candidate.path === "small.txt")
     expect(file?.additions).toBe(2)
-    expect(loadPatch(file!)).toContain("+one\n+two")
+    expect(loadPatch(process.cwd(), file!)).toContain("+one\n+two")
   })
 })
 
@@ -101,7 +101,7 @@ describe("listChangedFiles / loadPatch", () => {
     rmSync(join(repo, "gone.ts"))
     writeFileSync(join(repo, "new.ts"), "fresh\n")
 
-    const files = listChangedFiles()
+    const files = listChangedFiles(process.cwd())
     expect(files.map((file) => [file.path, file.status])).toEqual([
       ["gone.ts", "deleted"],
       ["keep.ts", "modified"],
@@ -110,8 +110,8 @@ describe("listChangedFiles / loadPatch", () => {
     expect(files.find((file) => file.path === "keep.ts")).toMatchObject({ additions: 1, deletions: 0 })
     expect(files.find((file) => file.path === "gone.ts")).toMatchObject({ additions: 0, deletions: 1 })
 
-    expect(loadPatch(files.find((file) => file.path === "keep.ts")!)).toContain("+three")
-    expect(loadPatch(files.find((file) => file.path === "new.ts")!)).toContain("+fresh")
+    expect(loadPatch(process.cwd(), files.find((file) => file.path === "keep.ts")!)).toContain("+three")
+    expect(loadPatch(process.cwd(), files.find((file) => file.path === "new.ts")!)).toContain("+fresh")
   })
 
   test("staged review only contains staged changes", () => {
@@ -123,8 +123,8 @@ describe("listChangedFiles / loadPatch", () => {
     writeFileSync(join(repo, "b.ts"), "b\nunstaged\n")
     git(repo, ["add", "a.ts"])
 
-    expect(listChangedFiles({ kind: "staged" }).map((file) => file.path)).toEqual(["a.ts"])
-    expect(listChangedFiles().map((file) => file.path)).toEqual(["a.ts", "b.ts"])
+    expect(listChangedFiles(process.cwd(), { kind: "staged" }).map((file) => file.path)).toEqual(["a.ts"])
+    expect(listChangedFiles(process.cwd()).map((file) => file.path)).toEqual(["a.ts", "b.ts"])
   })
 
   test("a repository without HEAD reviews untracked files only", () => {
@@ -134,9 +134,9 @@ describe("listChangedFiles / loadPatch", () => {
     process.chdir(repo)
     writeFileSync(join(repo, "first.ts"), "line one\n")
 
-    const files = listChangedFiles()
+    const files = listChangedFiles(process.cwd())
     expect(files.map((file) => file.status)).toEqual(["untracked"])
-    expect(loadPatch(files[0])).toContain("+line one")
+    expect(loadPatch(process.cwd(), files[0])).toContain("+line one")
   })
 
   test("commit review compares against the parent", () => {
@@ -146,8 +146,10 @@ describe("listChangedFiles / loadPatch", () => {
     const sha = git(repo, ["rev-parse", "HEAD"]).trim()
     const parent = git(repo, ["rev-parse", "HEAD^"]).trim()
 
-    const files = listChangedFiles({ kind: "commit", sha, parent, subject: "add a" })
+    const files = listChangedFiles(process.cwd(), { kind: "commit", sha, parent, subject: "add a" })
     expect(files.map((file) => [file.path, file.status])).toEqual([["a.ts", "added"]])
-    expect(loadPatch(files[0], { kind: "commit", sha, parent, subject: "add a" })).toContain("+a")
+    expect(loadPatch(process.cwd(), files[0], { kind: "commit", sha, parent, subject: "add a" })).toContain(
+      "+a",
+    )
   })
 })

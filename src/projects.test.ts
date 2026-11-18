@@ -123,12 +123,14 @@ describe("resolveProject", () => {
 })
 
 describe("openProject", () => {
-  test("chdirs to the repo root and remembers it", () => {
+  test("resolves the repo root and remembers it without moving the process", () => {
     const repo = makeRepo(tempDir("chert-projects-base-"), "gamma")
     const nested = join(repo, "src")
     mkdirSync(nested)
+    const before = process.cwd()
     expect(openProject(nested)).toBe(repo)
-    expect(process.cwd()).toBe(repo)
+    // Opening a project must not depend on, or change, the process directory.
+    expect(process.cwd()).toBe(before)
     expect(loadRecent().map((recent) => recent.path)).toContain(repo)
   })
 

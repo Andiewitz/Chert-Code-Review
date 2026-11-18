@@ -1,11 +1,11 @@
-// Invariant: process.cwd() must be the repo root whenever git.ts runs.
 // Git data layer: local review of working-tree changes vs HEAD (staged +
 // unstaged combined), plus untracked files synthesized as all-added diffs.
 // Renames are disabled (`--no-renames`) so every record has a single path.
 //
 // Read-only: chert never writes to the user's repo. All git access goes
-// through run(), which allowlists the first argument and sets
-// GIT_OPTIONAL_LOCKS=0 so a concurrent `git commit` is not blocked.
+// through run(), which takes the repository root explicitly, allowlists the
+// first argument and sets GIT_OPTIONAL_LOCKS=0 so a concurrent `git commit` is
+// not blocked. Nothing here depends on the process working directory.
 //
 // Synchronous on purpose: git calls are fast, and synchronous state updates
 // render deterministically regardless of the host renderer's event loop.
@@ -44,19 +44,20 @@ const ALLOWED = new Set([
 ])
 
 interface RunOptions {
-  /** Directory to run in; defaults to the process cwd (normally the repo root). */
+  /** Directory to run in; defaults to the repository root. */
   cwd?: string
   /** Data for commands that read stdin, such as hash-object. */
   input?: string
 }
 
-export function run(args: string[], options: RunOptions = {}): string {
+/** Run one read-only git command inside `root` (the repository root). */
+export function run(root: string, args: string[], options: RunOptions = {}): string {
   if (args.length === 0) throw new Error("git: no command given")
   if (!ALLOWED.has(args[0])) {
     throw new Error(`git: command not allowed: ${args[0]}`)
   }
   const proc = Bun.spawnSync(["git", ...args], {
-    cwd: options.cwd,
+    cwd: options.cwd ?? root,
     stdin: options.input === undefined ? undefined : Buffer.from(options.input),
     stdout: "pipe",
     stderr: "pipe",
@@ -70,13 +71,13 @@ export function run(args: string[], options: RunOptions = {}): string {
   return proc.stdout.toString()
 }
 
-export function gitDir(): string {
-  return run(["rev-parse", "--absolute-git-dir"]).trim()
+export function gitDir(root: string): string {
+  return run(root, ["rev-parse", "--absolute-git-dir"]).trim()
 }
 
-export function isGitRepository(): boolean {
+export function isGitRepository(root: string): boolean {
   return tryOr(() => {
-    run(["rev-parse", "--is-inside-work-tree"])
+    run(root, ["rev-parse", "--is-inside-work-tree"])
     return true
   }, false)
 }
@@ -119,32 +120,32 @@ function countLines(path: string): number {
   }, 0)
 }
 
-export function validateRef(value: string): boolean {
+export function validateRef(root: string, value: string): boolean {
   if (typeof value !== "string") return false
   if (value.length === 0 || value.length > 200) return false
   if (value.startsWith("-")) return false
   if (value.includes("\n") || value.includes("\0")) return false
   return tryOr(() => {
-    run(["rev-parse", "--verify", "--quiet", `${value}^{commit}`])
+    run(root, ["rev-parse", "--verify", "--quiet", `${value}^{commit}`])
     return true
   }, false)
 }
 
 /** The empty tree object, used as the parent of a repository's first commit. */
-export function emptyTreeId(): string {
-  return run(["hash-object", "-t", "tree", "--stdin"], { input: "" }).trim()
+export function emptyTreeId(root: string): string {
+  return run(root, ["hash-object", "-t", "tree", "--stdin"], { input: "" }).trim()
 }
 
-function hasHead(): boolean {
+function hasHead(root: string): boolean {
   return tryOr(() => {
-    run(["rev-parse", "--verify", "HEAD"])
+    run(root, ["rev-parse", "--verify", "HEAD"])
     return true
   }, false)
 }
 
-export function currentBranch(): string {
+export function currentBranch(root: string): string {
   return tryOr(() => {
-    const out = run(["rev-parse", "--abbrev-ref", "HEAD"]).trim()
+    const out = run(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()
     return out === "" ? "no commits" : out
   }, "no commits")
 }
@@ -158,7 +159,7 @@ interface DiffBase {
 }
 
 /** The single place that knows how a ReviewSource maps onto a diff. */
-function diffBaseArgs(source: ReviewSource, headExists: boolean): DiffBase {
+function diffBaseArgs(root: string, source: ReviewSource, headExists: boolean): DiffBase {
   switch (source.kind) {
     case "working":
       return { base: headExists ? ["HEAD"] : null, includesUntracked: true }
@@ -168,7 +169,7 @@ function diffBaseArgs(source: ReviewSource, headExists: boolean): DiffBase {
       return { base: [source.mergeBase], includesUntracked: true }
     case "commit":
       return {
-        base: [source.parent === "empty" ? emptyTreeId() : source.parent, source.sha],
+        base: [source.parent === "empty" ? emptyTreeId(root) : source.parent, source.sha],
         includesUntracked: false,
       }
   }
@@ -179,20 +180,20 @@ function diffArgs(base: string[], format: "--name-status" | "--numstat"): string
   return ["diff", ...base, "--no-renames", format, "-z", "--"]
 }
 
-export function listChangedFiles(source: ReviewSource = { kind: "working" }): ReviewFile[] {
-  if (!isGitRepository()) {
+export function listChangedFiles(root: string, source: ReviewSource = { kind: "working" }): ReviewFile[] {
+  if (!isGitRepository(root)) {
     throw new Error("not a git repository (or any of the parent directories)")
   }
 
   // One HEAD probe per call: hasHead() spawns git, and diffArgs used to ask
   // once and skipTracked asked again.
-  const headExists = source.kind === "working" ? hasHead() : true
-  const { base, includesUntracked } = diffBaseArgs(source, headExists)
+  const headExists = source.kind === "working" ? hasHead(root) : true
+  const { base, includesUntracked } = diffBaseArgs(root, source, headExists)
 
   const tracked: ReviewFile[] = []
   if (base !== null) {
-    const statuses = run(diffArgs(base, "--name-status"))
-    const numstat = run(diffArgs(base, "--numstat"))
+    const statuses = run(root, diffArgs(base, "--name-status"))
+    const numstat = run(root, diffArgs(base, "--numstat"))
 
     const statusByPath = new Map<string, FileStatus>()
     const statusTokens = statuses.split("\0")
@@ -217,7 +218,7 @@ export function listChangedFiles(source: ReviewSource = { kind: "working" }): Re
 
   let untrackedFiles: ReviewFile[] = []
   if (includesUntracked) {
-    const untrackedPaths = run(["ls-files", "--others", "--exclude-standard", "-z"])
+    const untrackedPaths = run(root, ["ls-files", "--others", "--exclude-standard", "-z"])
       .split("\0")
       .filter(Boolean)
     untrackedFiles = untrackedPaths.map((path) => ({
@@ -231,37 +232,45 @@ export function listChangedFiles(source: ReviewSource = { kind: "working" }): Re
   return [...tracked, ...untrackedFiles].sort((a, b) => a.path.localeCompare(b.path))
 }
 
-export function loadPatch(file: ReviewFile, source: ReviewSource = { kind: "working" }): string {
+export function loadPatch(
+  root: string,
+  file: ReviewFile,
+  source: ReviewSource = { kind: "working" },
+): string {
   if (file.status === "untracked") {
     return synthesizedAddedPatch(file.path)
   }
-  const headExists = source.kind === "working" ? hasHead() : true
-  const { base } = diffBaseArgs(source, headExists)
+  const headExists = source.kind === "working" ? hasHead(root) : true
+  const { base } = diffBaseArgs(root, source, headExists)
   if (base === null) {
     return synthesizedAddedPatch(file.path)
   }
-  return run(["diff", ...base, "--no-renames", "--no-color", "--", file.path])
+  return run(root, ["diff", ...base, "--no-renames", "--no-color", "--", file.path])
 }
 
 /** Every file git knows about in the working tree: tracked plus untracked. */
-export function listProjectFiles(): string[] {
-  const tracked = run(["ls-files", "-z"]).split("\0").filter(Boolean)
-  const untracked = run(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean)
+export function listProjectFiles(root: string): string[] {
+  const tracked = run(root, ["ls-files", "-z"]).split("\0").filter(Boolean)
+  const untracked = run(root, ["ls-files", "--others", "--exclude-standard", "-z"])
+    .split("\0")
+    .filter(Boolean)
   return Array.from(new Set([...tracked, ...untracked])).sort((a, b) => a.localeCompare(b))
 }
 
 /** Resolve the base branch for /review branch. */
-export function resolveReviewBase(): string | null {
+export function resolveReviewBase(root: string): string | null {
   // 1. origin/HEAD
   const remoteHead = tryOr(() => {
-    const out = run(["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]).trim()
+    const out = run(root, ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]).trim()
     const name = out.replace(/^origin\//, "")
     return name === "" ? null : name
   }, null)
   if (remoteHead !== null) return remoteHead
   // 2. first existing of main, master, develop
   for (const candidate of ["main", "master", "develop"]) {
-    if (tryOr(() => run(["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`]), null) !== null) {
+    if (
+      tryOr(() => run(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`]), null) !== null
+    ) {
       return candidate
     }
   }
@@ -269,10 +278,13 @@ export function resolveReviewBase(): string | null {
 }
 
 /** List recent commits as { sha, subject }. */
-export function listRecentCommits(limit = MAX_RECENT_COMMITS): { sha: string; subject: string }[] {
+export function listRecentCommits(
+  root: string,
+  limit = MAX_RECENT_COMMITS,
+): { sha: string; subject: string }[] {
   // No history (or no git): an empty list is the right answer.
   return tryOr(() => {
-    const out = run(["log", `--max-count=${limit}`, "--format=%H%x09%s"])
+    const out = run(root, ["log", `--max-count=${limit}`, "--format=%H%x09%s"])
     return out
       .trim()
       .split("\n")
@@ -287,25 +299,25 @@ export function listRecentCommits(limit = MAX_RECENT_COMMITS): { sha: string; su
 }
 
 /** Get commit subject (truncated). */
-export function commitSubject(sha: string): string {
-  return tryOr(() => run(["log", "-1", "--format=%s", sha]).trim(), "")
+export function commitSubject(root: string, sha: string): string {
+  return tryOr(() => run(root, ["log", "-1", "--format=%s", sha]).trim(), "")
 }
 
 /** Resolve a ref to a full sha. Returns null on failure. */
-export function resolveSha(ref: string): string | null {
-  if (!validateRef(ref)) return null
-  return tryOr(() => run(["rev-parse", `${ref}^{commit}`]).trim(), null)
+export function resolveSha(root: string, ref: string): string | null {
+  if (!validateRef(root, ref)) return null
+  return tryOr(() => run(root, ["rev-parse", `${ref}^{commit}`]).trim(), null)
 }
 
 /** Parent sha of a commit, or "empty" if none. Uses first parent for merges. */
-export function commitParent(sha: string): string | "empty" {
-  const out = tryOr(() => run(["rev-parse", `${sha}^1`]).trim(), "")
+export function commitParent(root: string, sha: string): string | "empty" {
+  const out = tryOr(() => run(root, ["rev-parse", `${sha}^1`]).trim(), "")
   return out === "" ? "empty" : out
 }
 
 /** Merge base of two refs. */
-export function mergeBase(a: string, b: string): string {
-  return run(["merge-base", a, b]).trim()
+export function mergeBase(root: string, a: string, b: string): string {
+  return run(root, ["merge-base", a, b]).trim()
 }
 
 function synthesizedAddedPatch(path: string): string {

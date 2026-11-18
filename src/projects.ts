@@ -51,7 +51,7 @@ export function resolveProjectRoot(dir: string): string | undefined {
   return tryOr(() => {
     const d = expandPath(dir)
     if (!isDirectory(d)) return undefined
-    const out = run(["rev-parse", "--show-toplevel"], { cwd: d }).trim()
+    const out = run(d, ["rev-parse", "--show-toplevel"]).trim()
     if (out === "") return undefined
     return toRealPath(out)
   }, undefined)
@@ -206,17 +206,14 @@ export function resolveProject(query: string): ResolveResult {
 
 /** Resolve `dir` to a repo root, chdir into it and remember it. Returns the
  * root, or undefined when `dir` is not inside a git repository. */
+/**
+ * Resolve the repository root for `dir` and remember it as recent. Deliberately
+ * does not chdir: every git call takes the root explicitly, and the agent
+ * subprocess gets its working directory as a spawn option.
+ */
 export function openProject(dir: string): string | undefined {
   const root = resolveProjectRoot(dir)
   if (root === undefined) return undefined
-  // A directory can disappear between resolution and chdir.
-  if (
-    !tryOr(() => {
-      process.chdir(root)
-      return true
-    }, false)
-  )
-    return undefined
   rememberProject(root)
   return root
 }

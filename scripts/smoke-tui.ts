@@ -72,8 +72,8 @@ async function phase1Tests(): Promise<void> {
 
     process.chdir(join(repo, "src"))
     const entered = openProject(join(repo, "src"))
-    assert(entered === repo, "openProject from subfolder returns and chdirs to root")
-    assert(process.cwd() === repo, "openProject chdirs to repo root")
+    assert(entered === repo, "openProject from a subfolder returns the repo root")
+    assert(process.cwd() === join(repo, "src"), "openProject leaves the process directory alone")
 
     const { testRender: render } = await import("@opentui/solid")
     const { ReviewApp } = await import("../src/tui/app.tsx")
@@ -457,7 +457,7 @@ async function phaseCTests(): Promise<void> {
   // allowlist test
   const { run } = await import("../src/git.ts")
   const threw = tryOr(() => {
-    run(["commit", "-m", "x"])
+    run(process.cwd(), ["commit", "-m", "x"])
     return false
   }, true)
   assert(threw, "phaseC run(['commit']) throws")
