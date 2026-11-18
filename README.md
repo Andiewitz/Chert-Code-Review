@@ -72,20 +72,30 @@ The `>` row at the bottom is the universal entry point (Claude Code-style):
 in the current project directory (opencode must be installed; no API keys needed).
 
 ```
-/help              command list
-/refresh           re-scan the working tree
-/review <source>   working | staged | branch [base] | last | commit <ref>
-/open <query>      jump to a file
-/run <command>     run a shell command in the current project
-/cd <dir>          switch project directory (opens repo root)
-/cd <name or path> switch to a saved or new project
-/projects          list saved projects
-/forget <name>     remove a saved project
-/cwd               show the current project
-/tree              whole project tree (folders, nested files, M/D/?? marks)
-/log               chat history for this session
-/highlights        list saved highlights (/highlights clear [yes])
-/export            write your review notes to markdown
+<!-- commands:start -->
+| command                                                       | what it does                                 |
+| --------------------------------------------------------------| ---------------------------------------------|
+| /help                                                         | show this list                               |
+| /home                                                         | open the menu                                |
+| /refresh                                                      | re-scan the working tree                     |
+| /open <query>                                                 | jump to a file (path match)                  |
+| /run <command>                                                | run a shell command in the current project   |
+| /cd <name or path>                                            | switch project directory                     |
+| /projects                                                     | list saved projects                          |
+| /forget <name or path>                                        | remove a saved project                       |
+| /cwd                                                          | show the current project                     |
+| /tree                                                         | show the whole project tree                  |
+| /log                                                          | show chat history                            |
+| /highlights [clear [yes]]                                     | list or clear highlights                     |
+| /export                                                       | export review notes to markdown              |
+| /review [working\|staged\|branch [base]\|last\|commit <ref>]  | what to review                               |
+| /connect [provider [key]]                                     | connector status / save a provider key       |
+| /disconnect <provider>                                        | remove a saved provider key                  |
+| /use <connector> [model]                                      | route plain-text prompts (opencode or a provider)|
+| /models [provider]                                            | list a provider's models                     |
+| /themes [name]                                                | list or switch color theme                   |
+| /quit                                                         | exit chert (Ctrl+C also works)               |
+<!-- commands:end -->
 ```
 
 ## Where state lives

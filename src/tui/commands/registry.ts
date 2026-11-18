@@ -77,7 +77,7 @@ export function buildHelpText(): string {
   return [
     "keys:",
     "  Up/Down     previous / next file",
-    "  Left/Right  pick an action: Back · slow · messy · safe · Next",
+    "  Left/Right  pick an action: Back · messy · safe · Next",
     "  Enter       run the picked action",
     "  Space       mark the file reviewed",
     "  h           highlight lines (↑↓ move, Enter select, Esc done)",

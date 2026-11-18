@@ -12,8 +12,11 @@
     "smoke": "bun run scripts/smoke-tui.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "check": "bun run typecheck && bun run test && bun run smoke",
-    "format": "prettier --write ."
+    "check": "bun run typecheck && bun run test && bun run smoke && bun run check:docs && bun run check:size",
+    "format": "prettier --write .",
+    "gen:readme": "bun run scripts/gen-readme-commands.ts",
+    "check:docs": "bun run scripts/gen-readme-commands.ts --check",
+    "check:size": "bun run scripts/check-size.ts"
   },
   "devDependencies": {
     "@types/bun": "1.4.4",

@@ -2,6 +2,7 @@
 
 import { VERSION } from "./version"
 import { tryOr } from "./best-effort"
+import { COMMAND_DEFS } from "./tui/commands/registry"
 
 function printHelp(): void {
   console.log(`chert v${VERSION}
@@ -17,7 +18,10 @@ Commands:
   tui [path]      same thing, spelled out
 
 Keys inside the TUI: ↑↓ files · ←→ action · Enter run · Space reviewed ·
-  h highlight · Esc menu · Ctrl+C quit. Type / for commands.`)
+  h highlight · Esc menu · Ctrl+C quit. Type / for commands.
+
+Slash commands:
+${COMMAND_DEFS.map((def) => `  ${def.usage.padEnd(58)}${def.description}`).join("\n")}`)
 }
 
 async function launchTui(startDir?: string): Promise<void> {
