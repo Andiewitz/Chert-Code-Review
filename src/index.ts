@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-const VERSION = "0.4.0"
+import { VERSION } from "./version"
 
 function printHelp(): void {
   console.log(`chert v${VERSION}
