@@ -15,6 +15,7 @@ const ALLOWED = new Set([
   "log",
   "cat-file",
   "hash-object",
+  "status",
 ])
 
 interface RunOptions {
