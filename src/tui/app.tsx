@@ -888,14 +888,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     }
   }
 
-  /** Diff rows for any changed file, not just the one currently on screen. */
-  function patchRowsFor(path: string): Row[] | undefined {
-    const target = (files() ?? []).find((f) => f.path === path)
-    if (target === undefined) return undefined
-    // The caller reports the file in its skipped list when this is undefined.
-    return tryOr(() => parsePatch(loadPatch(cwd(), target, reviewSource())), undefined)
-  }
-
   async function askAgent(prompt: string): Promise<void> {
     addEntry("user", prompt)
     setLastQuestion(prompt)
@@ -916,17 +908,11 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         model: model(),
         projectRoot: cwd(),
         changedFiles: (files() ?? []).map((f) => f.path),
-        getRows: patchRowsFor,
-        existingHighlights: highlights(),
         onPrefixChange: (prefix) => {
           statusPrefix = prefix
           tick()
         },
       })
-      if (turn.highlights.length > 0 && persistHighlights([...highlights(), ...turn.highlights])) {
-        const skipMsg = turn.skipped.length > 0 ? ` (${turn.skipped.length} skipped: ${turn.skipped[0]})` : ""
-        setStatus(`AI added ${turn.highlights.length} highlights${skipMsg}`)
-      }
       addEntry(turn.isError ? "error" : "agent", turn.text)
       setLastAnswer(turn.text)
       setAnswerIsError(turn.isError)

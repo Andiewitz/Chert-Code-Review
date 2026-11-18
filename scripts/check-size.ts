@@ -26,8 +26,6 @@ const ALLOWED_FUNCTIONS: Record<string, string> = {
   "src/tui/app.tsx:ReviewApp": "the component's signal graph; each extracted view removes a block of it",
   "src/tui/keyboard.ts:handleKeyPress":
     "the precedence table itself: splitting it would scatter the order it exists to document",
-  "src/highlights.ts:parseAgentHighlights":
-    "one linear validate-and-narrow pass over untrusted JSON; splitting it would hide the invariants",
   "src/diffrows.ts:parsePatch": "a single line-by-line state machine over patch text",
   "src/tui/commands/review.ts:reviewCommand": "argument parsing plus one branch per review source",
   "src/tui/components/overlays.tsx:Overlays":

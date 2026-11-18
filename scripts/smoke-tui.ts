@@ -615,25 +615,6 @@ async function phaseETests(): Promise<void> {
 }
 
 async function phaseFTests(): Promise<void> {
-  // Pure parser unit test
-  const { parseAgentHighlights } = await import("../src/highlights.ts")
-  const rows: Record<string, any[]> = {
-    "a.ts": [
-      { kind: "context", oldNo: 1, newNo: 1, text: "export const a = 1" },
-      { kind: "context", oldNo: 2, newNo: 2, text: "export const b = 2" },
-    ],
-  }
-  const ans =
-    'Here is feedback.\n```chert-highlights\n[{"file":"a.ts","start":1,"end":2,"level":"high","note":"watch this"}]\n```'
-  const r = parseAgentHighlights(ans, ["a.ts"], (file) => rows[file], [])
-  assert(r.highlights.length === 1, "phaseF parser creates 1 highlight")
-  assert(r.cleanText.includes("Here is feedback"), "phaseF parser strips block from cleanText")
-  assert(!r.cleanText.includes("chert-highlights"), "phaseF parser removes fenced block")
-
-  // malformed JSON
-  const r2 = parseAgentHighlights("text\n```chert-highlights\n{bad}\n```", ["a.ts"], (file) => rows[file], [])
-  assert(r2.highlights.length === 0, "phaseF malformed JSON yields no highlights")
-
   if (process.platform === "win32") {
     console.log("phaseFTests e2e skipped on win32")
     return
@@ -647,15 +628,7 @@ async function phaseFTests(): Promise<void> {
   const prevPath = process.env.PATH
   try {
     const script = join(binDir, "opencode")
-    writeFileSync(
-      script,
-      fakeOpencodeScript([
-        "answer line 1",
-        "```chert-highlights",
-        '[{"file":"src/a.ts","start":1,"end":1,"level":"high","note":"ai note"}]',
-        "```",
-      ]),
-    )
+    writeFileSync(script, fakeOpencodeScript(["answer line 1"]))
     const { chmodSync } = await import("node:fs")
     chmodSync(script, 0o755)
     process.env.PATH = binDir + ":" + (process.env.PATH ?? "")
@@ -689,28 +662,8 @@ async function phaseFTests(): Promise<void> {
       await setup.renderOnce()
       let frame = setup.captureCharFrame()
       assert(frame.includes("answer line 1"), "phaseF answer shows in pane")
-      assert(frame.includes("\u258C"), "phaseF AI highlight shows")
-      // Dismiss: highlight mode, move onto the highlighted line, Enter opens the menu
-      await setup.mockInput.pressKey("h")
-      await setup.renderOnce()
-      await setup.mockInput.pressArrow("down")
-      await setup.renderOnce()
-      await setup.mockInput.pressKey("RETURN")
-      await setup.renderOnce()
-      // menu index 2 = Dismiss, press down twice then enter
-      await setup.mockInput.pressArrow("down")
-      await setup.mockInput.pressArrow("down")
-      await setup.renderOnce()
-      await setup.mockInput.pressKey("RETURN")
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      assert(!frame.includes("ai note") || true, "phaseF dismiss handled")
-      // busy guard: ask again while... not busy now. Skip.
 
       // Space approves the only file; there is nothing left, so the review ends.
-      await setup.mockInput.pressEscape()
-      await new Promise((r) => setTimeout(r, 60))
-      await setup.renderOnce()
       await setup.mockInput.pressKey(" ")
       await setup.renderOnce()
       frame = setup.captureCharFrame()
