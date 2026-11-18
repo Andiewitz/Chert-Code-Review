@@ -6,6 +6,7 @@
 import { lstatSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { isGitRepository, listProjectFiles } from "./git"
+import { lastPathSegment } from "./paths"
 
 export interface TreeLine {
   text: string
@@ -41,11 +42,6 @@ interface TreeNode {
   children: TreeNode[]
   /** Child lookup by `${isDir ? "d" : "f"}:${name}` so building stays linear. */
   byKey: Map<string, TreeNode>
-}
-
-function cwdBase(): string {
-  const parts = process.cwd().split(/[\\/]/)
-  return parts[parts.length - 1] || process.cwd()
 }
 
 /** Every file in the project, project-relative with "/" separators. */
@@ -86,7 +82,13 @@ function walkFs(dir: string, prefix: string, out: string[]): void {
 }
 
 function buildTree(paths: string[]): TreeNode {
-  const root: TreeNode = { name: cwdBase(), path: "", isDir: true, children: [], byKey: new Map() }
+  const root: TreeNode = {
+    name: lastPathSegment(process.cwd()),
+    path: "",
+    isDir: true,
+    children: [],
+    byKey: new Map(),
+  }
   for (const path of paths) {
     const parts = path.split("/")
     let node = root

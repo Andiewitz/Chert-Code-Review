@@ -1,8 +1,9 @@
-import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs"
+import { lstatSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, isAbsolute, join, resolve } from "node:path"
 import { configDir, readJson, writeJsonAtomic } from "./config"
 import { run } from "./git"
+import { toRealPath } from "./paths"
 
 export interface RecentProject {
   path: string
@@ -44,14 +45,6 @@ export function isDirectory(path: string): boolean {
   }
 }
 
-function toReal(path: string): string {
-  try {
-    return realpathSync(path)
-  } catch {
-    return resolve(path)
-  }
-}
-
 /** Resolve the git repository root for `dir`.
  * Returns the realpath'd root, or undefined when `dir` is missing, not a
  * repository, or git fails. Never throws. */
@@ -61,7 +54,7 @@ export function resolveProjectRoot(dir: string): string | undefined {
     if (!isDirectory(d)) return undefined
     const out = run(["rev-parse", "--show-toplevel"], { cwd: d }).trim()
     if (out === "") return undefined
-    return toReal(out)
+    return toRealPath(out)
   } catch {
     return undefined
   }
@@ -101,7 +94,7 @@ export function loadRecent(): RecentProject[] {
     for (const r of cleaned) {
       const abs = resolve(r.path)
       if (!isDirectory(abs)) continue
-      const real = toReal(abs)
+      const real = toRealPath(abs)
       if (seen.has(real)) continue
       seen.add(real)
       out.push({ path: abs, lastOpened: r.lastOpened })
@@ -116,8 +109,8 @@ export function loadRecent(): RecentProject[] {
 export function rememberProject(path: string): void {
   try {
     const abs = resolve(expandPath(path))
-    const real = toReal(abs)
-    const list = loadRecent().filter((r) => toReal(r.path) !== real)
+    const real = toRealPath(abs)
+    const list = loadRecent().filter((r) => toRealPath(r.path) !== real)
     list.unshift({ path: abs, lastOpened: Date.now() })
     saveRecent(list.slice(0, 20))
   } catch {
@@ -127,8 +120,8 @@ export function rememberProject(path: string): void {
 
 export function forgetProject(path: string): void {
   try {
-    const real = toReal(resolve(expandPath(path)))
-    const list = loadRecent().filter((r) => toReal(r.path) !== real)
+    const real = toRealPath(resolve(expandPath(path)))
+    const list = loadRecent().filter((r) => toRealPath(r.path) !== real)
     saveRecent(list)
   } catch {
     // ignore

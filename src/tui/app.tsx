@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, Show, onCleanup } from "so
 import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { TextAttributes, extToFiletype, getTreeSitterClient } from "@opentui/core"
 import type { InputRenderable, ScrollBoxRenderable, SelectOption } from "@opentui/core"
-import { basename, dirname, join, resolve } from "node:path"
+import { basename, join } from "node:path"
 import {
   commitParent,
   commitSubject,
@@ -445,15 +445,6 @@ function scoreCommand(def: CommandDef, query: string): number {
   return best
 }
 
-function toRealPath(path: string): string {
-  try {
-    const { realpathSync } = require("node:fs")
-    return realpathSync(path)
-  } catch {
-    return resolve(path)
-  }
-}
-
 type MainView = "review" | "tree" | "log" | "done"
 type PickerKind = "recent" | "found"
 interface PickerItem {
@@ -598,11 +589,6 @@ export function ReviewApp() {
   const mainVisible = createMemo(
     () => !menuOpen() && !allFilesOpen() && !projectsOpen() && !reviewPickerOpen(),
   )
-
-  function cwdBase(): string {
-    const parts = cwd().split(/[\\/]/)
-    return parts[parts.length - 1] || cwd()
-  }
 
   function connectorsStatus(): string {
     const lines = [
