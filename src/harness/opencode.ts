@@ -1,6 +1,7 @@
 // The opencode adapter. All opencode spawning happens here: detection, session
 // discovery, the one fork at review start, and every later request that resumes
-// it. The call runs `--agent plan`, which denies edits, and never `--auto`.
+// it. The call runs `--agent plan`, which denies edits, and never the auto-approve
+// flag.
 //
 // `run --format json` prints one JSON object per line; text lives in
 // `part.text` and every event carries the session id. A fresh run invents a new
@@ -11,10 +12,8 @@ import { tryOr } from "../best-effort"
 import { MAX_HARNESS_SESSIONS } from "../limits"
 import { probeVersion, runProcessOrThrow } from "./process"
 import type { ProcessOptions } from "./process"
+import { OPENING_PROMPT } from "./types"
 import type { HarnessAdapter, HarnessDetection, ReviewSession, SessionInfo, StartOptions } from "./types"
-
-/** The interface has no prompt flag, so the fork is opened with a tiny one. */
-export const OPENING_PROMPT = "Reply with the single word: ready."
 
 const DEFAULT_COMMAND = "opencode"
 const DEFAULT_TIMEOUT_MS = 120_000

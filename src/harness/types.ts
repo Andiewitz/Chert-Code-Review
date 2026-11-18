@@ -2,6 +2,12 @@
 // the developer's session and ask structured questions through the protocol.
 // Every adapter owns exactly one CLI, so there is one place that spawns it.
 
+/**
+ * No harness has a prompt flag for "open a fork", so the fork starts with a
+ * trivial request. One wording for both adapters keeps them comparable.
+ */
+export const OPENING_PROMPT = "Reply with the single word: ready."
+
 export interface SessionInfo {
   id: string
   title: string

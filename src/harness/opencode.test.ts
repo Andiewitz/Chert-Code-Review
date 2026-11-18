@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { OPENING_PROMPT, createOpencodeHarness, parseEvents, parseSessionList } from "./opencode"
+import { createOpencodeHarness, parseEvents, parseSessionList } from "./opencode"
+import { OPENING_PROMPT } from "./types"
 
 const skip = process.platform === "win32"
 
