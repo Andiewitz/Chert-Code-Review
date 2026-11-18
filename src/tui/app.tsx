@@ -48,6 +48,9 @@ import {
 import { bestEffort } from "../best-effort"
 import { configDir, readJson, writeJsonAtomic } from "../config"
 import { MAX_COMMAND_OUTPUT_LINES } from "../limits"
+import { HomeScreen } from "./components/home-screen"
+import { RowList } from "./components/row-list"
+import { Wordmark } from "./components/wordmark"
 import { shortenPath, truncateEnd } from "./format"
 import { commandToSuggestion } from "./commands/registry"
 import type { CommandDef, Suggestion } from "./commands/registry"
@@ -59,7 +62,7 @@ import {
   resolveCommand,
   scoreCommand,
 } from "./commands/registry"
-import { COLORS, THEMES, THEME_DESCRIPTIONS, THEME_LABELS, setTheme } from "./theme"
+import { ATTR, COLORS, THEMES, THEME_DESCRIPTIONS, THEME_LABELS, setTheme } from "./theme"
 import type { ThemeName } from "./theme"
 import { tailLines } from "../text"
 import { QUESTIONS } from "../questions"
@@ -75,90 +78,6 @@ import type { Highlight, HighlightLevel } from "../highlights"
 
 // Terminal cells have no font size, so hierarchy comes from weight and tone:
 // bold + bright for what the eye should land on, dim for everything else.
-const ATTR = {
-  none: 0,
-  bold: TextAttributes.BOLD,
-  dim: TextAttributes.DIM,
-}
-
-const WORDMARK = [
-  " ██████╗██╗  ██╗███████╗██████╗ ████████╗",
-  "██╔════╝██║  ██║██╔════╝██╔══██╗╚══██╔══╝",
-  "██║     ███████║█████╗  ██████╔╝   ██║   ",
-  "██║     ██╔══██║██╔══╝  ██╔══██╗   ██║   ",
-  "╚██████╗██║  ██║███████╗██║  ██║   ██║   ",
-  " ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ",
-]
-
-const WORDMARK_FG = ["#e2d6ff", "#d3c0ff", "#c4aeff", "#b39bfb", "#9f86f4", "#8367d8"]
-
-interface PickerRow {
-  label: string
-  hint?: string
-}
-
-/** A keyboard-driven list: arrows move the cursor, Enter acts on it. */
-function RowList(props: { rows: () => PickerRow[]; index: () => number }) {
-  return (
-    <For each={props.rows()}>
-      {(row, i) => {
-        const active = () => i() === props.index()
-        return (
-          <box
-            flexDirection="row"
-            height={1}
-            flexShrink={0}
-            backgroundColor={active() ? COLORS().selectedBg : COLORS().bg}
-          >
-            <text fg={active() ? COLORS().purpleBright : COLORS().rule}>{active() ? "  ▸ " : "    "}</text>
-            <text
-              fg={active() ? COLORS().bright : COLORS().text}
-              attributes={active() ? ATTR.bold : ATTR.none}
-            >
-              {row.label}
-            </text>
-            <box flexGrow={1} />
-            <Show when={row.hint !== undefined}>
-              <text fg={active() ? COLORS().dim : COLORS().rule} attributes={ATTR.dim}>
-                {row.hint ?? ""}
-              </text>
-            </Show>
-          </box>
-        )
-      }}
-    </For>
-  )
-}
-
-/** Launch/home screen: recent projects below the wordmark and prompt. */
-function HomeScreen(props: { recents: () => Array<{ path: string }>; index: () => number }) {
-  return (
-    <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1}>
-      <text fg={COLORS().purple} attributes={ATTR.bold}>
-        {"Recent projects"}
-      </text>
-      <box height={1} flexShrink={0} />
-      <Show
-        when={props.recents().length > 0}
-        fallback={
-          <text fg={COLORS().dim} attributes={ATTR.dim}>
-            {"Nothing here yet — type /cd <path> to open a project."}
-          </text>
-        }
-      >
-        <RowList
-          rows={() =>
-            props
-              .recents()
-              .map((r) => ({ label: basename(r.path), hint: shortenPath(displayPath(r.path), 38) }))
-          }
-          index={props.index}
-        />
-      </Show>
-      <box flexGrow={1} />
-    </box>
-  )
-}
 
 const STATUS_GLYPH: Record<ReviewFile["status"], string> = {
   added: "new",
@@ -2247,13 +2166,7 @@ export function ReviewApp() {
       <Show when={!hasProject()}>
         <box flexShrink={0} flexDirection="column" paddingLeft={2} paddingRight={2}>
           <box height={1} flexShrink={0} />
-          <For each={WORDMARK}>
-            {(line, i) => (
-              <text fg={WORDMARK_FG[i()] ?? COLORS().purple} attributes={ATTR.bold}>
-                {line}
-              </text>
-            )}
-          </For>
+          <Wordmark />
           <box height={1} flexShrink={0} />
           <text fg={COLORS().dim}>{"review your changes, one file at a time"}</text>
           <box height={1} flexShrink={0} />
@@ -2639,13 +2552,7 @@ export function ReviewApp() {
       <Show when={menuOpen()}>
         <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
           <box height={1} flexShrink={0} />
-          <For each={WORDMARK}>
-            {(line, i) => (
-              <text fg={WORDMARK_FG[i()] ?? COLORS().purple} attributes={ATTR.bold}>
-                {line}
-              </text>
-            )}
-          </For>
+          <Wordmark />
           <box height={1} flexShrink={0} />
           <text fg={COLORS().dim} attributes={ATTR.dim}>
             {"menu"}

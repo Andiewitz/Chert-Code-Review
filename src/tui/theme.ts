@@ -3,6 +3,7 @@
 // a switch without prop drilling.
 
 import { createSignal } from "solid-js"
+import { TextAttributes } from "@opentui/core"
 import { join } from "node:path"
 import { bestEffort } from "../best-effort"
 import { configDir, readJson, writeJsonAtomic } from "../config"
@@ -122,3 +123,22 @@ export function colors(): ThemePalette {
   return THEMES[themeName()]
 }
 export const COLORS = colors
+
+// Terminal cells have no font size, so hierarchy comes from weight and tone:
+// bold + bright for what the eye should land on, dim for everything else.
+export const ATTR = {
+  none: 0,
+  bold: TextAttributes.BOLD,
+  dim: TextAttributes.DIM,
+}
+
+export const WORDMARK = [
+  " ██████╗██╗  ██╗███████╗██████╗ ████████╗",
+  "██╔════╝██║  ██║██╔════╝██╔══██╗╚══██╔══╝",
+  "██║     ███████║█████╗  ██████╔╝   ██║   ",
+  "██║     ██╔══██║██╔══╝  ██╔══██╗   ██║   ",
+  "╚██████╗██║  ██║███████╗██║  ██║   ██║   ",
+  " ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ",
+]
+
+export const WORDMARK_FG = ["#e2d6ff", "#d3c0ff", "#c4aeff", "#b39bfb", "#9f86f4", "#8367d8"]
