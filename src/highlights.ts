@@ -197,10 +197,26 @@ export interface AgentParseResult {
 
 const AGENT_BLOCK_RE = /```chert-highlights\s*\n([\s\S]*?)```/
 
+/** An answer may add at most this many highlights; extras are reported as skipped. */
+const MAX_AI_HIGHLIGHTS_PER_ANSWER = 8
+/** Longest span (in lines) a single AI highlight may cover. */
+const MAX_AI_HIGHLIGHT_RANGE = 30
+/** AI notes are trimmed to this many characters. */
+const MAX_AI_HIGHLIGHT_NOTE = 200
+
+type DiffRow = { kind: string; oldNo?: number; newNo?: number; text: string }
+
+/** A candidate that already satisfied every check, with its captured lines. */
+interface HighlightCandidate extends ParsedAgentHighlight {
+  text: string[]
+  before: string[]
+  after: string[]
+}
+
 export function parseAgentHighlights(
   answerText: string,
   changedFiles: string[],
-  getRows: (file: string) => { kind: string; oldNo?: number; newNo?: number; text: string }[] | undefined,
+  getRows: (file: string) => DiffRow[] | undefined,
   existing: Highlight[],
 ): AgentParseResult {
   const skipped: string[] = []
@@ -209,7 +225,7 @@ export function parseAgentHighlights(
   if (!match) {
     return { highlights: [], skipped, cleanText: answerText }
   }
-  let parsed: any
+  let parsed: unknown
   try {
     parsed = JSON.parse(match[1])
   } catch {
@@ -218,14 +234,16 @@ export function parseAgentHighlights(
   if (!Array.isArray(parsed)) {
     return { highlights: [], skipped: ["highlight block is not an array"], cleanText: cleaned }
   }
+  const entries: unknown[] = parsed
 
   const existingKeys = new Set(existing.map((h) => `${h.path}:${h.side}:${h.start}-${h.end}`))
-  const candidates: ParsedAgentHighlight[] = []
-  for (const item of parsed) {
-    if (!item || typeof item !== "object") {
+  const candidates: HighlightCandidate[] = []
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== "object") {
       skipped.push("invalid entry")
       continue
     }
+    const item = entry as Record<string, unknown>
     const file = typeof item.file === "string" ? item.file : ""
     if (!changedFiles.includes(file)) {
       skipped.push(`unknown file: ${file}`)
@@ -242,7 +260,7 @@ export function parseAgentHighlights(
       skipped.push("end before start")
       continue
     }
-    if (end - start + 1 > 30) {
+    if (end - start + 1 > MAX_AI_HIGHLIGHT_RANGE) {
       skipped.push("range too large")
       continue
     }
@@ -251,7 +269,7 @@ export function parseAgentHighlights(
       skipped.push("invalid level")
       continue
     }
-    const note = typeof item.note === "string" ? item.note.trim().slice(0, 200) : ""
+    const note = typeof item.note === "string" ? item.note.trim().slice(0, MAX_AI_HIGHLIGHT_NOTE) : ""
     if (note === "") {
       skipped.push("empty note")
       continue
@@ -265,8 +283,7 @@ export function parseAgentHighlights(
     const sideRows = rows.filter((r) =>
       side === "new" ? r.kind === "context" || r.kind === "add" : r.kind === "context" || r.kind === "del",
     )
-    const lineNoOf = (r: { oldNo?: number; newNo?: number }) =>
-      side === "new" ? (r.newNo ?? 0) : (r.oldNo ?? 0)
+    const lineNoOf = (r: DiffRow) => (side === "new" ? (r.newNo ?? 0) : (r.oldNo ?? 0))
     // validate start/end are real line numbers
     const startRowIdx = sideRows.findIndex((r) => lineNoOf(r) === start)
     const endRowIdx = sideRows.findIndex((r) => lineNoOf(r) === end)
@@ -293,38 +310,42 @@ export function parseAgentHighlights(
       continue
     }
 
-    const textLines = sideRows.slice(startRowIdx, endRowIdx + 1).map((r) => r.text)
-    const before = sideRows.slice(Math.max(0, startRowIdx - 2), startRowIdx).map((r) => r.text)
-    const after = sideRows.slice(endRowIdx + 1, endRowIdx + 3).map((r) => r.text)
-
-    candidates.push({ file, side, start, end, level, note })
-    // store text/before/after temporarily by attaching to a parallel array
-    ;(candidates[candidates.length - 1] as any)._text = textLines
-    ;(candidates[candidates.length - 1] as any)._before = before
-    ;(candidates[candidates.length - 1] as any)._after = after
+    candidates.push({
+      file,
+      side,
+      start,
+      end,
+      level,
+      note,
+      text: sideRows.slice(startRowIdx, endRowIdx + 1).map((r) => r.text),
+      before: sideRows.slice(Math.max(0, startRowIdx - 2), startRowIdx).map((r) => r.text),
+      after: sideRows.slice(endRowIdx + 1, endRowIdx + 3).map((r) => r.text),
+    })
   }
 
-  // max 8 per answer, highest level first
   const levelRank = { high: 0, medium: 1, low: 2 }
   candidates.sort((a, b) => levelRank[a.level] - levelRank[b.level])
-  const chosen = candidates.slice(0, 8)
-  if (candidates.length > 8) {
-    skipped.push(`${candidates.length - 8} over cap`)
+  const chosen = candidates.slice(0, MAX_AI_HIGHLIGHTS_PER_ANSWER)
+  if (candidates.length > MAX_AI_HIGHLIGHTS_PER_ANSWER) {
+    skipped.push(`${candidates.length - MAX_AI_HIGHLIGHTS_PER_ANSWER} over cap`)
   }
 
-  const highlights: Highlight[] = chosen.map((c, idx) => ({
-    id: `ai-${Date.now()}-${idx}`,
-    path: c.file,
-    side: c.side,
-    start: c.start,
-    end: c.end,
-    text: (c as any)._text,
-    before: (c as any)._before,
-    after: (c as any)._after,
+  // A UUID rather than a timestamp+index: two answers in the same millisecond
+  // used to produce colliding ids.
+  const createdAt = Date.now()
+  const highlights: Highlight[] = chosen.map((candidate) => ({
+    id: `ai-${crypto.randomUUID()}`,
+    path: candidate.file,
+    side: candidate.side,
+    start: candidate.start,
+    end: candidate.end,
+    text: candidate.text,
+    before: candidate.before,
+    after: candidate.after,
     by: "ai",
-    level: c.level,
-    note: c.note,
-    createdAt: Date.now(),
+    level: candidate.level,
+    note: candidate.note,
+    createdAt,
   }))
 
   return { highlights, skipped, cleanText: cleaned }
