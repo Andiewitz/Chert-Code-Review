@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun run scripts/build.ts",
-    "smoke": "bun run scripts/smoke-tui.ts"
+    "smoke": "bun run scripts/smoke-tui.ts",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/bun": "1.4.4",
