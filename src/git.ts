@@ -12,6 +12,7 @@
 
 import { readFileSync, statSync } from "node:fs"
 import { MAX_RECENT_COMMITS } from "./limits"
+import { tryOr } from "./best-effort"
 
 export type FileStatus = "added" | "modified" | "deleted" | "untracked"
 
@@ -74,12 +75,10 @@ export function gitDir(): string {
 }
 
 export function isGitRepository(): boolean {
-  try {
+  return tryOr(() => {
     run(["rev-parse", "--is-inside-work-tree"])
     return true
-  } catch {
-    return false
-  }
+  }, false)
 }
 
 function parseCounts(value: string): number {
@@ -103,7 +102,8 @@ function statusFromCode(code: string): FileStatus {
 const MAX_UNTRACKED_PATCH_BYTES = 256 * 1024
 
 function countLines(path: string): number {
-  try {
+  // An unreadable file contributes no lines to the "additions" count.
+  return tryOr(() => {
     // Counting a huge untracked file is not worth reading it into memory.
     if (statSync(path).size > MAX_UNTRACKED_PATCH_BYTES) return 0
     const buf = readFileSync(path)
@@ -116,9 +116,7 @@ function countLines(path: string): number {
     }
     if (buf[buf.length - 1] !== 10) lines += 1
     return lines
-  } catch {
-    return 0
-  }
+  }, 0)
 }
 
 export function validateRef(value: string): boolean {
@@ -126,12 +124,10 @@ export function validateRef(value: string): boolean {
   if (value.length === 0 || value.length > 200) return false
   if (value.startsWith("-")) return false
   if (value.includes("\n") || value.includes("\0")) return false
-  try {
+  return tryOr(() => {
     run(["rev-parse", "--verify", "--quiet", `${value}^{commit}`])
     return true
-  } catch {
-    return false
-  }
+  }, false)
 }
 
 /** The empty tree object, used as the parent of a repository's first commit. */
@@ -140,21 +136,17 @@ export function emptyTreeId(): string {
 }
 
 function hasHead(): boolean {
-  try {
+  return tryOr(() => {
     run(["rev-parse", "--verify", "HEAD"])
     return true
-  } catch {
-    return false
-  }
+  }, false)
 }
 
 export function currentBranch(): string {
-  try {
+  return tryOr(() => {
     const out = run(["rev-parse", "--abbrev-ref", "HEAD"]).trim()
     return out === "" ? "no commits" : out
-  } catch {
-    return "no commits"
-  }
+  }, "no commits")
 }
 
 /** What one review source contributes to a `git diff` invocation. */
@@ -261,23 +253,16 @@ export function listProjectFiles(): string[] {
 /** Resolve the base branch for /review branch. */
 export function resolveReviewBase(): string | null {
   // 1. origin/HEAD
-  try {
+  const remoteHead = tryOr(() => {
     const out = run(["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]).trim()
-    if (out !== "") {
-      // strip "origin/" prefix
-      const name = out.replace(/^origin\//, "")
-      if (name !== "") return name
-    }
-  } catch {
-    // fall through
-  }
+    const name = out.replace(/^origin\//, "")
+    return name === "" ? null : name
+  }, null)
+  if (remoteHead !== null) return remoteHead
   // 2. first existing of main, master, develop
-  for (const cand of ["main", "master", "develop"]) {
-    try {
-      run(["rev-parse", "--verify", "--quiet", `${cand}^{commit}`])
-      return cand
-    } catch {
-      // try next
+  for (const candidate of ["main", "master", "develop"]) {
+    if (tryOr(() => run(["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`]), null) !== null) {
+      return candidate
     }
   }
   return null
@@ -285,7 +270,8 @@ export function resolveReviewBase(): string | null {
 
 /** List recent commits as { sha, subject }. */
 export function listRecentCommits(limit = MAX_RECENT_COMMITS): { sha: string; subject: string }[] {
-  try {
+  // No history (or no git): an empty list is the right answer.
+  return tryOr(() => {
     const out = run(["log", `--max-count=${limit}`, "--format=%H%x09%s"])
     return out
       .trim()
@@ -297,39 +283,24 @@ export function listRecentCommits(limit = MAX_RECENT_COMMITS): { sha: string; su
         const subject = idx === -1 ? "" : line.slice(idx + 1).trim()
         return { sha, subject }
       })
-  } catch {
-    return []
-  }
+  }, [])
 }
 
 /** Get commit subject (truncated). */
 export function commitSubject(sha: string): string {
-  try {
-    return run(["log", "-1", "--format=%s", sha]).trim()
-  } catch {
-    return ""
-  }
+  return tryOr(() => run(["log", "-1", "--format=%s", sha]).trim(), "")
 }
 
 /** Resolve a ref to a full sha. Returns null on failure. */
 export function resolveSha(ref: string): string | null {
   if (!validateRef(ref)) return null
-  try {
-    return run(["rev-parse", `${ref}^{commit}`]).trim()
-  } catch {
-    return null
-  }
+  return tryOr(() => run(["rev-parse", `${ref}^{commit}`]).trim(), null)
 }
 
 /** Parent sha of a commit, or "empty" if none. Uses first parent for merges. */
 export function commitParent(sha: string): string | "empty" {
-  try {
-    const out = run(["rev-parse", `${sha}^1`]).trim()
-    if (out === "") return "empty"
-    return out
-  } catch {
-    return "empty"
-  }
+  const out = tryOr(() => run(["rev-parse", `${sha}^1`]).trim(), "")
+  return out === "" ? "empty" : out
 }
 
 /** Merge base of two refs. */
@@ -338,12 +309,8 @@ export function mergeBase(a: string, b: string): string {
 }
 
 function synthesizedAddedPatch(path: string): string {
-  let content = Buffer.alloc(0)
-  try {
-    content = readFileSync(path)
-  } catch {
-    // unreadable: fall through to an empty patch
-  }
+  // An unreadable file still gets a header, just with no lines.
+  const content = tryOr(() => readFileSync(path), Buffer.alloc(0))
 
   const header = [
     `diff --git a/${path} b/${path}`,

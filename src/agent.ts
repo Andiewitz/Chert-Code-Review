@@ -8,22 +8,21 @@
 
 import { MAX_AGENT_ANSWER_LINES } from "./limits"
 import { tailLines } from "./text"
+import { tryOr } from "./best-effort"
 
 let available: boolean | null = null
 
 export function opencodeAvailable(): boolean {
   if (available === null) {
-    try {
+    available = tryOr(() => {
       const proc = Bun.spawnSync(["opencode", "--version"], {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
         env: { ...process.env },
       })
-      available = proc.exitCode === 0
-    } catch {
-      available = false
-    }
+      return proc.exitCode === 0
+    }, false)
   }
   return available
 }

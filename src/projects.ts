@@ -5,6 +5,7 @@ import { configDir, readJson, writeJsonAtomic } from "./config"
 import { run } from "./git"
 import { MAX_CONTAINED_REPOS, MAX_RECENT_PROJECTS } from "./limits"
 import { toRealPath } from "./paths"
+import { bestEffort, tryOr } from "./best-effort"
 
 export interface RecentProject {
   path: string
@@ -39,26 +40,21 @@ export function expandPath(input: string, base = process.cwd()): string {
 }
 
 export function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory()
-  } catch {
-    return false
-  }
+  return tryOr(() => statSync(path).isDirectory(), false)
 }
 
 /** Resolve the git repository root for `dir`.
  * Returns the realpath'd root, or undefined when `dir` is missing, not a
  * repository, or git fails. Never throws. */
 export function resolveProjectRoot(dir: string): string | undefined {
-  try {
+  // Not a repository (or unreadable): the caller shows the home screen.
+  return tryOr(() => {
     const d = expandPath(dir)
     if (!isDirectory(d)) return undefined
     const out = run(["rev-parse", "--show-toplevel"], { cwd: d }).trim()
     if (out === "") return undefined
     return toRealPath(out)
-  } catch {
-    return undefined
-  }
+  }, undefined)
 }
 
 /** Replace the home directory prefix with "~" for display. */
@@ -76,15 +72,14 @@ function projectsFile(): string {
 }
 
 function saveRecent(list: RecentProject[]): void {
-  try {
-    writeJsonAtomic(projectsFile(), { recent: list } satisfies ProjectsFile)
-  } catch {
-    // write failure must never break startup
-  }
+  bestEffort("save the recent-projects list", () =>
+    writeJsonAtomic(projectsFile(), { recent: list } satisfies ProjectsFile),
+  )
 }
 
 export function loadRecent(): RecentProject[] {
-  try {
+  // An unreadable projects file means "no recents", not a startup failure.
+  return tryOr(() => {
     const parsed = readJson<ProjectsFile>(projectsFile())
     const items = Array.isArray(parsed?.recent) ? parsed.recent : []
     const cleaned = items
@@ -102,74 +97,51 @@ export function loadRecent(): RecentProject[] {
       if (out.length >= MAX_RECENT_PROJECTS) break
     }
     return out
-  } catch {
-    return []
-  }
+  }, [])
 }
 
 export function rememberProject(path: string): void {
-  try {
+  bestEffort("remember the opened project", () => {
     const abs = resolve(expandPath(path))
     const real = toRealPath(abs)
     const list = loadRecent().filter((r) => toRealPath(r.path) !== real)
     list.unshift({ path: abs, lastOpened: Date.now() })
     saveRecent(list.slice(0, MAX_RECENT_PROJECTS))
-  } catch {
-    // must never break startup/opening
-  }
+  })
 }
 
 export function forgetProject(path: string): void {
-  try {
+  bestEffort("forget a saved project", () => {
     const real = toRealPath(resolve(expandPath(path)))
     const list = loadRecent().filter((r) => toRealPath(r.path) !== real)
     saveRecent(list)
-  } catch {
-    // ignore
-  }
+  })
 }
 
 /** Immediate child folders that contain a ".git" entry (file or folder).
  * Skips dot-names and node_modules. Alphabetical, capped at 50. No git calls. */
 export function findReposBelow(dir: string): string[] {
-  try {
+  // Unresolvable directory: there is nothing to list.
+  return tryOr(() => {
     const base = resolve(expandPath(dir))
-    let names: string[]
-    try {
-      names = readdirSync(base)
-    } catch {
-      return []
-    }
+    const names = tryOr<string[] | undefined>(() => readdirSync(base), undefined)
+    if (names === undefined) return []
     const out: Array<{ name: string; path: string }> = []
     for (const name of names) {
       if (name.startsWith(".") || name === "node_modules") continue
       const child = join(base, name)
-      try {
-        const st = lstatSync(child)
-        if (!st.isDirectory() && !st.isSymbolicLink()) continue
-        // treat symlink as candidate dir if it points to a dir
-        if (st.isSymbolicLink()) {
-          try {
-            if (!statSync(child).isDirectory()) continue
-          } catch {
-            continue
-          }
-        }
-      } catch {
-        continue
-      }
-      try {
-        lstatSync(join(child, ".git"))
-      } catch {
-        continue
-      }
+      // A child we cannot stat is not a candidate repository.
+      const st = tryOr(() => lstatSync(child), undefined)
+      if (st === undefined) continue
+      if (!st.isDirectory() && !st.isSymbolicLink()) continue
+      // treat symlink as candidate dir if it points to a dir
+      if (st.isSymbolicLink() && !tryOr(() => statSync(child).isDirectory(), false)) continue
+      if (!tryOr(() => !!lstatSync(join(child, ".git")), false)) continue
       out.push({ name, path: child })
     }
     out.sort((a, b) => a.name.localeCompare(b.name))
     return out.slice(0, MAX_CONTAINED_REPOS).map((e) => e.path)
-  } catch {
-    return []
-  }
+  }, [])
 }
 
 export type ResolveResult =
@@ -237,11 +209,14 @@ export function resolveProject(query: string): ResolveResult {
 export function openProject(dir: string): string | undefined {
   const root = resolveProjectRoot(dir)
   if (root === undefined) return undefined
-  try {
-    process.chdir(root)
-  } catch {
+  // A directory can disappear between resolution and chdir.
+  if (
+    !tryOr(() => {
+      process.chdir(root)
+      return true
+    }, false)
+  )
     return undefined
-  }
   rememberProject(root)
   return root
 }

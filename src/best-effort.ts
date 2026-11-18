@@ -10,3 +10,15 @@ export function bestEffort(label: string, action: () => void): void {
     // best effort: label
   }
 }
+
+/**
+ * Run `attempt` and fall back when it throws (a probe: "is this a repo?",
+ * "does this file exist?"). Unlike bestEffort, the return value is the point.
+ */
+export function tryOr<T>(attempt: () => T, fallback: T): T {
+  try {
+    return attempt()
+  } catch {
+    return fallback
+  }
+}

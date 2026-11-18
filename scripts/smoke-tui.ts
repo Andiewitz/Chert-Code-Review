@@ -7,6 +7,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { tryOr } from "../src/best-effort"
 import { ensureSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import { getTreeSitterClient } from "@opentui/core"
 import type { testRender } from "@opentui/solid"
@@ -455,12 +456,10 @@ async function phaseBTests(): Promise<void> {
 async function phaseCTests(): Promise<void> {
   // allowlist test
   const { run } = await import("../src/git.ts")
-  let threw = false
-  try {
+  const threw = tryOr(() => {
     run(["commit", "-m", "x"])
-  } catch {
-    threw = true
-  }
+    return false
+  }, true)
   assert(threw, "phaseC run(['commit']) throws")
 
   const repo = mkdtempSync(join(tmpdir(), "chert-phasec-"))
@@ -861,12 +860,12 @@ async function main(): Promise<void> {
     // Windows can transiently hold handles on freshly used directories.
     for (const dir of [tmp, cfgTmp]) {
       for (let attempt = 0; attempt < 5; attempt += 1) {
-        try {
+        const removed = tryOr(() => {
           rmSync(dir, { recursive: true, force: true })
-          break
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 200))
-        }
+          return true
+        }, false)
+        if (removed) break
+        await new Promise((resolve) => setTimeout(resolve, 200))
       }
     }
   }

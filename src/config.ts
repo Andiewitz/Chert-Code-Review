@@ -3,6 +3,7 @@
 // a half-written file behind.
 
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { bestEffort, tryOr } from "./best-effort"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -12,11 +13,7 @@ export function configDir(): string {
 
 /** Read and parse a JSON file; undefined when it is missing or malformed. */
 export function readJson<T>(path: string): T | undefined {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as T
-  } catch {
-    return undefined
-  }
+  return tryOr<T | undefined>(() => JSON.parse(readFileSync(path, "utf8")) as T, undefined)
 }
 
 interface WriteJsonOptions {
@@ -36,15 +33,14 @@ export function writeJsonAtomic(path: string, data: unknown, options: WriteJsonO
   const mode = options.mode ?? 0o666
   const tmp = `${path}.${process.pid}.tmp`
   writeFileSync(tmp, payload, { mode })
-  try {
+  // Windows refuses to rename over an existing file, so fall back to a direct
+  // write; the temp file is then redundant.
+  const renamed = tryOr(() => {
     renameSync(tmp, path)
-  } catch {
-    // Windows refuses to rename over an existing file.
+    return true
+  }, false)
+  if (!renamed) {
     writeFileSync(path, payload, { mode })
-    try {
-      unlinkSync(tmp)
-    } catch {
-      // a leftover temp file is harmless
-    }
+    bestEffort("remove the superseded temp file", () => unlinkSync(tmp))
   }
 }

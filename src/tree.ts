@@ -6,6 +6,7 @@
 import { lstatSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { isGitRepository, listProjectFiles } from "./git"
+import { tryOr } from "./best-effort"
 import { lastPathSegment } from "./paths"
 
 export interface TreeLine {
@@ -55,29 +56,23 @@ function projectFiles(): string[] {
 }
 
 function walkFs(dir: string, prefix: string, out: string[]): void {
-  let names: string[]
-  try {
-    names = readdirSync(dir)
-  } catch {
-    return // unreadable directory: skip silently
-  }
+  // An unreadable directory is not an error worth stopping the walk for.
+  const names = tryOr<string[] | undefined>(() => readdirSync(dir), undefined)
+  if (names === undefined) return
   names.sort((a, b) => a.localeCompare(b))
   for (const name of names) {
     if (FS_IGNORE.has(name)) continue
     const full = join(dir, name)
     const rel = prefix === "" ? name : `${prefix}/${name}`
-    try {
+    // A file that vanished mid-walk simply is not listed.
+    tryOr(() => {
       const info = lstatSync(full)
       // Symlinks are listed as files and never recursed into, so link
       // cycles can't hang the walk.
-      if (info.isDirectory()) {
-        walkFs(full, rel, out)
-      } else {
-        out.push(rel)
-      }
-    } catch {
-      // Vanished mid-walk: skip.
-    }
+      if (info.isDirectory()) walkFs(full, rel, out)
+      else out.push(rel)
+      return true
+    }, false)
   }
 }
 

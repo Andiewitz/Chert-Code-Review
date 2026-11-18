@@ -1,6 +1,7 @@
 // Review commands: what is being reviewed, the transcript, highlights and export.
 
 import { mkdirSync, writeFileSync } from "node:fs"
+import { tryOr } from "../../best-effort"
 import { join } from "node:path"
 import {
   commitParent,
@@ -87,13 +88,14 @@ export function reviewCommand(ctx: CommandContext): void {
       ctx.setView("log")
       return
     }
-    try {
-      ctx.applyReviewSource({ kind: "branch", base, mergeBase: mergeBase(current, base) })
-      ctx.setStatus(`reviewing: everything on ${current} since ${base}`)
-    } catch {
+    const split = tryOr(() => mergeBase(current, base), null)
+    if (split === null) {
       ctx.addEntry("error", `Could not find where ${current} split from ${base}.`)
       ctx.setView("log")
+      return
     }
+    ctx.applyReviewSource({ kind: "branch", base, mergeBase: split })
+    ctx.setStatus(`reviewing: everything on ${current} since ${base}`)
     return
   }
 

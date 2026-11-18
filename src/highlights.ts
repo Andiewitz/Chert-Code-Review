@@ -7,6 +7,7 @@ import { join } from "node:path"
 import { writeJsonAtomic } from "./config"
 import { MAX_SAVED_HIGHLIGHTS } from "./limits"
 import { gitDir } from "./git"
+import { bestEffort, tryOr } from "./best-effort"
 
 export type HighlightSide = "new" | "old"
 export type HighlightBy = "you" | "ai"
@@ -52,11 +53,9 @@ export function loadHighlights(): Highlight[] {
     return parsed.highlights.filter((h) => h && typeof h.id === "string")
   } catch (e) {
     // corrupt: back up
-    try {
+    bestEffort("back up a corrupt highlights file", () => {
       if (existsSync(path)) copyFileSync(path, path + ".bak")
-    } catch {
-      // ignore
-    }
+    })
     return []
   }
 }
@@ -239,12 +238,11 @@ export function parseAgentHighlights(
   if (!match) {
     return { highlights: [], skipped, cleanText: answerText }
   }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(match[1])
-  } catch {
+  const parse = tryOr<{ value: unknown } | undefined>(() => ({ value: JSON.parse(match[1]) }), undefined)
+  if (parse === undefined) {
     return { highlights: [], skipped: ["malformed JSON in highlight block"], cleanText: cleaned }
   }
+  const parsed: unknown = parse.value
   if (!Array.isArray(parsed)) {
     return { highlights: [], skipped: ["highlight block is not an array"], cleanText: cleaned }
   }

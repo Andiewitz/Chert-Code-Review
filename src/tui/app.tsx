@@ -10,7 +10,7 @@ import { buildTreeLines } from "../tree"
 import type { TreeLine } from "../tree"
 import { PROVIDERS, findProvider, getActive, keySource } from "../connectors"
 import { displayPath, loadRecent, openProject, resolveProjectRoot } from "../projects"
-import { bestEffort } from "../best-effort"
+import { bestEffort, tryOr } from "../best-effort"
 import { MAX_SAVED_HIGHLIGHTS } from "../limits"
 import { configDir, readJson, writeJsonAtomic } from "../config"
 import { HomeScreen } from "./components/home-screen"
@@ -107,13 +107,7 @@ const ACTION_ITEMS = ["Back", "Is it messy?", "Is it safe?", "Next"]
 
 export function ReviewApp() {
   const renderer = useRenderer()
-  const initialRoot = (() => {
-    try {
-      return resolveProjectRoot(process.cwd())
-    } catch {
-      return undefined
-    }
-  })()
+  const initialRoot = tryOr(() => resolveProjectRoot(process.cwd()), undefined)
 
   const [files, setFiles] = createSignal<ReviewFile[] | null>(null)
   const [loadError, setLoadError] = createSignal<string | null>(null)
@@ -405,13 +399,8 @@ export function ReviewApp() {
     try {
       setHighlights(loadHighlights())
       setFiles(listChangedFiles(reviewSource()))
-      // currentBranch() already reports "no commits" for a HEAD-less repo;
-      // this catch only covers a git layer that throws instead.
-      try {
-        setBranch(currentBranch())
-      } catch {
-        setBranch("no commits")
-      }
+      // currentBranch() already reports "no commits" for a HEAD-less repo.
+      setBranch(tryOr(() => currentBranch(), "no commits"))
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error))
       setBranch("no commits")
@@ -678,12 +667,8 @@ export function ReviewApp() {
   function patchRowsFor(path: string): Row[] | undefined {
     const target = (files() ?? []).find((f) => f.path === path)
     if (target === undefined) return undefined
-    try {
-      return parsePatch(loadPatch(target, reviewSource()))
-    } catch {
-      // The caller reports the file in its skipped list.
-      return undefined
-    }
+    // The caller reports the file in its skipped list when this is undefined.
+    return tryOr(() => parsePatch(loadPatch(target, reviewSource())), undefined)
   }
 
   async function askAgent(prompt: string): Promise<void> {

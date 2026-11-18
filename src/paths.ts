@@ -2,14 +2,11 @@
 
 import { realpathSync } from "node:fs"
 import { resolve } from "node:path"
+import { tryOr } from "./best-effort"
 
 /** Resolve symlinks when possible; fall back to an absolute, normalised path. */
 export function toRealPath(path: string): string {
-  try {
-    return realpathSync(path)
-  } catch {
-    return resolve(path)
-  }
+  return tryOr(() => realpathSync(path), resolve(path))
 }
 
 /** The last segment of a path, handling both separators (for display). */

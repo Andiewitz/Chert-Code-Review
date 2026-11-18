@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { VERSION } from "./version"
+import { tryOr } from "./best-effort"
 
 function printHelp(): void {
   console.log(`chert v${VERSION}
@@ -60,16 +61,12 @@ switch (command) {
   }
   default: {
     if (!isFlagOrKnownCommand(command)) {
-      try {
-        const { statSync } = await import("node:fs")
-        const { expandPath } = await import("./projects.ts")
-        const p = expandPath(command)
-        if (statSync(p).isDirectory()) {
-          await launchTui(command)
-          break
-        }
-      } catch {
-        // fall through to error
+      const { statSync } = await import("node:fs")
+      const { expandPath } = await import("./projects.ts")
+      const isFolder = tryOr(() => statSync(expandPath(command)).isDirectory(), false)
+      if (isFolder) {
+        await launchTui(command)
+        break
       }
     }
     console.error(`no such folder or command: ${command}`)
