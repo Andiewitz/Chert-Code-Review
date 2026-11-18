@@ -1199,11 +1199,6 @@ export function ReviewApp() {
     bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
   })
 
-  const filetype = createMemo(() => {
-    const path = file()?.path ?? ""
-    return path === "" ? "" : extToFiletype(path.includes(".") ? path.slice(path.lastIndexOf(".")) : path)
-  })
-
   const codeRows = createMemo<Row[]>(() => parsePatch(patch()))
 
   const codeCursorRow = createMemo(() => {
