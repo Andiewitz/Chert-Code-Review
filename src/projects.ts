@@ -191,12 +191,22 @@ export function parseCdArgument(raw: string): string {
   return p
 }
 
-/** Resolve a /cd query to an action. */
+/** Successively looser ways to match a project name against a query. */
+const NAME_TIERS: Array<(name: string, query: string) => boolean> = [
+  (name, query) => name === query,
+  (name, query) => name.startsWith(query),
+  (name, query) => name.includes(query),
+]
+
+/**
+ * Resolve a /cd query to a decision. Pure: it never chdirs and never touches
+ * the recent list, so callers decide when a project is really opened.
+ */
 export function resolveProject(query: string): ResolveResult {
   const q = query.trim()
   const expanded = expandPath(q)
   if (isDirectory(expanded)) {
-    const root = enterProject(expanded)
+    const root = resolveProjectRoot(expanded)
     if (root !== undefined) {
       return { kind: "open", root, name: basename(root) || root }
     }
@@ -206,36 +216,24 @@ export function resolveProject(query: string): ResolveResult {
     }
     return { kind: "none", query: q }
   }
+
   const recents = loadRecent()
   const lower = q.toLowerCase()
-  const tryTier = (pred: (r: RecentProject) => boolean): RecentProject[] => recents.filter(pred)
-  // exact
-  let matches = tryTier((r) => basename(r.path).toLowerCase() === lower)
-  if (matches.length === 1) {
-    const root = enterProject(expandPath(matches[0].path))
+  for (const tier of NAME_TIERS) {
+    const matches = recents.filter((recent) => tier(basename(recent.path).toLowerCase(), lower))
+    if (matches.length > 1) return { kind: "ambiguous", matches }
+    if (matches.length !== 1) continue
+    // A saved path may have vanished or stopped being a repository; if so,
+    // fall through to the next, looser tier just as a failed open used to.
+    const root = resolveProjectRoot(expandPath(matches[0].path))
     if (root !== undefined) return { kind: "open", root, name: basename(root) || root }
   }
-  if (matches.length > 1) return { kind: "ambiguous", matches }
-  // prefix
-  matches = tryTier((r) => basename(r.path).toLowerCase().startsWith(lower))
-  if (matches.length === 1) {
-    const root = enterProject(expandPath(matches[0].path))
-    if (root !== undefined) return { kind: "open", root, name: basename(root) || root }
-  }
-  if (matches.length > 1) return { kind: "ambiguous", matches }
-  // substring
-  matches = tryTier((r) => basename(r.path).toLowerCase().includes(lower))
-  if (matches.length === 1) {
-    const root = enterProject(expandPath(matches[0].path))
-    if (root !== undefined) return { kind: "open", root, name: basename(root) || root }
-  }
-  if (matches.length > 1) return { kind: "ambiguous", matches }
   return { kind: "none", query: q }
 }
 
-/** Resolve `dir` to a repo root and chdir into it. Returns the root on
- * success, or undefined if `dir` is not inside a git repository. */
-export function enterProject(dir: string): string | undefined {
+/** Resolve `dir` to a repo root, chdir into it and remember it. Returns the
+ * root, or undefined when `dir` is not inside a git repository. */
+export function openProject(dir: string): string | undefined {
   const root = resolveProjectRoot(dir)
   if (root === undefined) return undefined
   try {
@@ -243,10 +241,6 @@ export function enterProject(dir: string): string | undefined {
   } catch {
     return undefined
   }
-  try {
-    rememberProject(root)
-  } catch {
-    // remembering must never break opening
-  }
+  rememberProject(root)
   return root
 }

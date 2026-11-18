@@ -27,7 +27,7 @@ function assert(condition: boolean, message: string): void {
 }
 
 async function phase1Tests(): Promise<void> {
-  const { expandPath, resolveProjectRoot, enterProject } = await import("../src/projects.ts")
+  const { expandPath, resolveProjectRoot, openProject } = await import("../src/projects.ts")
 
   const home = process.env.HOME ?? ""
   assert(expandPath("~/code-test-base", "/tmp") === join(home, "code-test-base"), "expandPath expands ~/")
@@ -70,9 +70,9 @@ async function phase1Tests(): Promise<void> {
     writeFileSync(join(repo, "src", "untracked-new.ts"), "export const brandNew = true\n")
 
     process.chdir(join(repo, "src"))
-    const entered = enterProject(join(repo, "src"))
-    assert(entered === repo, "enterProject from subfolder returns and chdirs to root")
-    assert(process.cwd() === repo, "enterProject chdirs to repo root")
+    const entered = openProject(join(repo, "src"))
+    assert(entered === repo, "openProject from subfolder returns and chdirs to root")
+    assert(process.cwd() === repo, "openProject chdirs to repo root")
 
     const { testRender: render } = await import("@opentui/solid")
     const { ReviewApp } = await import("../src/tui/app.tsx")

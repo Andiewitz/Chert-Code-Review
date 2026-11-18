@@ -36,7 +36,7 @@ import {
 import type { ProviderDef } from "../connectors"
 import {
   displayPath,
-  enterProject,
+  openProject,
   expandPath,
   findReposBelow,
   forgetProject,
@@ -1297,7 +1297,7 @@ export function ReviewApp() {
           }
           const target = previousProject
           const savedCwd = hasProject() ? cwd() : null
-          const root = enterProject(target)
+          const root = openProject(target)
           if (root === undefined) {
             addEntry("error", `that folder isn't a git project: ${target}`)
             setView("log")
@@ -1317,9 +1317,15 @@ export function ReviewApp() {
         const query = parseCdArgument(rest)
         const result = resolveProject(query)
         if (result.kind === "open") {
+          const root = openProject(result.root)
+          if (root === undefined) {
+            addEntry("error", `that folder isn't a git project: ${result.root}`)
+            setView("log")
+            return
+          }
           const savedCwd = hasProject() ? cwd() : null
-          if (savedCwd !== null && savedCwd !== result.root) previousProject = savedCwd
-          setCwd(result.root)
+          if (savedCwd !== null && savedCwd !== root) previousProject = savedCwd
+          setCwd(root)
           setHasProject(true)
           load()
           setView("review")
@@ -2308,7 +2314,7 @@ export function ReviewApp() {
   function openRecent(index: number): void {
     const item = loadRecent()[index]
     if (!item) return
-    const root = enterProject(item.path)
+    const root = openProject(item.path)
     if (root === undefined) {
       setStatus(`can't open ${displayPath(item.path)}`)
       return
@@ -3052,7 +3058,7 @@ export function ReviewApp() {
 
 export async function launch(startDir?: string): Promise<void> {
   try {
-    enterProject(startDir ?? process.cwd())
+    openProject(startDir ?? process.cwd())
   } catch {
     // ignore
   }
