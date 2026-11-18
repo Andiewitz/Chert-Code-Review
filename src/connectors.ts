@@ -152,6 +152,21 @@ export function setActive(connector: string, model?: string): void {
 // OpenAI-compatible API calls
 // ---------------------------------------------------------------------------
 
+/** Upper bound on a provider round-trip: a stalled socket must not freeze the prompt. */
+const REQUEST_TIMEOUT_MS = 60_000
+
+/** fetch() with a deadline, and a message that says which provider stalled. */
+async function fetchProvider(url: string, init: RequestInit, label: string): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new Error(`${label} did not answer within ${REQUEST_TIMEOUT_MS / 1000}s`)
+    }
+    throw new Error(`${label} request failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 export async function chatCompletion(
   provider: ProviderDef,
   key: string,
@@ -165,17 +180,21 @@ export async function chatCompletion(
   }
   if (provider.id === "openrouter") headers["X-Title"] = "chert"
 
-  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: prompt },
-      ],
-    }),
-  })
+  const response = await fetchProvider(
+    `${provider.baseUrl}/chat/completions`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: prompt },
+        ],
+      }),
+    },
+    provider.label,
+  )
   if (!response.ok) {
     const body = await response.text().catch(() => "")
     throw new Error(
@@ -191,9 +210,11 @@ export async function chatCompletion(
 }
 
 export async function listModels(provider: ProviderDef, key: string): Promise<string[]> {
-  const response = await fetch(`${provider.baseUrl}/models`, {
-    headers: { Authorization: `Bearer ${key}` },
-  })
+  const response = await fetchProvider(
+    `${provider.baseUrl}/models`,
+    { headers: { Authorization: `Bearer ${key}` } },
+    provider.label,
+  )
   if (!response.ok) {
     throw new Error(`${provider.label} API error ${response.status}`)
   }

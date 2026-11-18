@@ -25,6 +25,9 @@ export function opencodeAvailable(): boolean {
   return available
 }
 
+/** How long a single opencode run may take before it is killed. */
+const AGENT_TIMEOUT_MS = 120_000
+
 export async function runAgent(prompt: string, cwd: string): Promise<string> {
   const proc = Bun.spawn(["opencode", "run", prompt], {
     cwd,
@@ -33,15 +36,27 @@ export async function runAgent(prompt: string, cwd: string): Promise<string> {
     stdin: "ignore",
     env: { ...process.env },
   })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
-  if (exitCode !== 0) {
-    throw new Error(stderr.trim() || `opencode run exited with code ${exitCode}`)
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    proc.kill()
+  }, AGENT_TIMEOUT_MS)
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    if (timedOut) {
+      throw new Error(`opencode did not finish within ${AGENT_TIMEOUT_MS / 1000}s`)
+    }
+    if (exitCode !== 0) {
+      throw new Error(stderr.trim() || `opencode run exited with code ${exitCode}`)
+    }
+    return tailLines(stdout.trim(), 40)
+  } finally {
+    clearTimeout(timeout)
   }
-  return tailLines(stdout.trim(), 40)
 }
 
 export function tailLines(text: string, max: number): string {
