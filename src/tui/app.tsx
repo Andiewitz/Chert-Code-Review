@@ -25,7 +25,6 @@ import {
   PROVIDERS,
   chatCompletion,
   clearProviderKey,
-  configDir,
   findProvider,
   getActive,
   keySource,
@@ -45,10 +44,11 @@ import {
   resolveProject,
   resolveProjectRoot,
 } from "../projects"
+import { configDir, readJson, writeJsonAtomic } from "../config"
 import { QUESTIONS } from "../questions"
 import { parsePatch } from "../diffrows"
 import type { Row } from "../diffrows"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { loadHighlights, parseAgentHighlights, saveHighlights, resolveHighlights } from "../highlights"
 import type { Highlight, HighlightLevel } from "../highlights"
 
@@ -147,22 +147,18 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
 }
 
 function loadThemeName(): ThemeName {
-  try {
-    const raw = readFileSync(join(configDir(), "theme.json"), "utf8")
-    const parsed = JSON.parse(raw) as { theme?: string }
-    if (parsed && typeof parsed.theme === "string" && parsed.theme in THEMES) return parsed.theme as ThemeName
-  } catch {
-    /* ignore */
+  const parsed = readJson<{ theme?: string }>(join(configDir(), "theme.json"))
+  if (parsed && typeof parsed.theme === "string" && parsed.theme in THEMES) {
+    return parsed.theme as ThemeName
   }
   return "default"
 }
 
 function saveThemeName(name: ThemeName): void {
   try {
-    mkdirSync(configDir(), { recursive: true })
-    writeFileSync(join(configDir(), "theme.json"), JSON.stringify({ theme: name }) + "\n")
+    writeJsonAtomic(join(configDir(), "theme.json"), { theme: name })
   } catch {
-    /* ignore */
+    // a read-only config directory must not break the TUI
   }
 }
 
@@ -744,33 +740,16 @@ export function ReviewApp() {
     return join(configDir(), "review-sources.json")
   }
   function loadSavedReviewSource(root: string): ReviewSource | null {
-    try {
-      const raw = readFileSync(reviewSourcesPath(), "utf8")
-      const parsed = JSON.parse(raw) as Record<string, any>
-      const src = parsed?.[root]
-      if (!src || typeof src.kind !== "string") return null
-      if (src.kind === "commit") {
-        if (typeof src.sha !== "string" || resolveSha(src.sha) === null) return null
-      }
-      return src as ReviewSource
-    } catch {
-      return null
-    }
+    const parsed = readJson<Record<string, ReviewSource>>(reviewSourcesPath())
+    const src = parsed?.[root]
+    if (!src || typeof src.kind !== "string") return null
+    if (src.kind === "commit" && resolveSha(src.sha) === null) return null
+    return src
   }
   function saveReviewSource(root: string, src: ReviewSource): void {
-    try {
-      let obj: Record<string, any> = {}
-      try {
-        obj = JSON.parse(readFileSync(reviewSourcesPath(), "utf8")) as Record<string, any>
-      } catch {
-        /* ignore */
-      }
-      obj[root] = src
-      mkdirSync(configDir(), { recursive: true })
-      writeFileSync(reviewSourcesPath(), `${JSON.stringify(obj, null, 2)}\n`)
-    } catch {
-      /* ignore */
-    }
+    const obj = readJson<Record<string, ReviewSource>>(reviewSourcesPath()) ?? {}
+    obj[root] = src
+    writeJsonAtomic(reviewSourcesPath(), obj)
   }
   function setReviewSourcePersist(src: ReviewSource): void {
     setReviewSource(src)

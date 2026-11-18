@@ -2,9 +2,10 @@
 // Pure helpers (resolveHighlights) plus storage (load/save) that writes only
 // to <gitDir>/chert/highlights.json.
 
-import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync, mkdirSync } from "node:fs"
-import { join, dirname } from "node:path"
-import { gitDir, run } from "./git"
+import { copyFileSync, existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+import { writeJsonAtomic } from "./config"
+import { gitDir } from "./git"
 
 export type HighlightSide = "new" | "old"
 export type HighlightBy = "you" | "ai"
@@ -40,14 +41,6 @@ function highlightsPath(): string {
   return join(gitDir(), "chert", "highlights.json")
 }
 
-function ensureDir(): void {
-  try {
-    mkdirSync(dirname(highlightsPath()), { recursive: true })
-  } catch {
-    // ignore
-  }
-}
-
 export function loadHighlights(): Highlight[] {
   const path = highlightsPath()
   try {
@@ -68,7 +61,6 @@ export function loadHighlights(): Highlight[] {
 }
 
 export function saveHighlights(highlights: Highlight[]): void {
-  ensureDir()
   const path = highlightsPath()
   // cap 500: drop oldest AI first
   let list = [...highlights]
@@ -78,10 +70,8 @@ export function saveHighlights(highlights: Highlight[]): void {
     const dropIds = new Set(ai.slice(0, toDrop).map((h) => h.id))
     list = list.filter((h) => !dropIds.has(h.id))
   }
-  const tmp = path + ".tmp"
   const data: HighlightsFile = { version: 1, highlights: list }
-  writeFileSync(tmp, JSON.stringify(data, null, 2))
-  renameSync(tmp, path)
+  writeJsonAtomic(path, data)
 }
 
 // Pure resolver: given diff rows and highlights for a file, return Map id -> resolved or null.

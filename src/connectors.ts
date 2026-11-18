@@ -4,10 +4,9 @@
 // Keys resolve from ~/.chert/connectors.json (CHERT_CONFIG_DIR overrides the
 // directory, which keeps tests hermetic) or from environment variables.
 
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { tailLines } from "./agent"
+import { configDir, readJson, writeJsonAtomic } from "./config"
 
 export interface ProviderDef {
   id: string
@@ -70,31 +69,17 @@ interface StoredConfig {
   active?: { connector: string; model?: string }
 }
 
-export function configDir(): string {
-  return process.env.CHERT_CONFIG_DIR ?? join(homedir(), ".chert")
-}
-
 function configFile(): string {
   return join(configDir(), "connectors.json")
 }
 
 function loadConfig(): StoredConfig {
-  try {
-    return JSON.parse(readFileSync(configFile(), "utf8")) as StoredConfig
-  } catch {
-    return {}
-  }
+  return readJson<StoredConfig>(configFile()) ?? {}
 }
 
 function saveConfig(config: StoredConfig): void {
   try {
-    mkdirSync(configDir(), { recursive: true })
-    writeFileSync(configFile(), `${JSON.stringify(config, null, 2)}\n`)
-    try {
-      chmodSync(configFile(), 0o600)
-    } catch {
-      // Windows filesystems may not support POSIX modes; ignore.
-    }
+    writeJsonAtomic(configFile(), config, { mode: 0o600 })
   } catch (error) {
     throw new Error(
       `could not write ${configFile()}: ${error instanceof Error ? error.message : String(error)}`,

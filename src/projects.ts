@@ -1,15 +1,7 @@
-import {
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  statSync,
-  writeFileSync,
-} from "node:fs"
+import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, isAbsolute, join, resolve } from "node:path"
-import { configDir } from "./connectors"
+import { configDir, readJson, writeJsonAtomic } from "./config"
 
 export interface RecentProject {
   path: string
@@ -96,8 +88,7 @@ function projectsFile(): string {
 
 function saveRecent(list: RecentProject[]): void {
   try {
-    mkdirSync(configDir(), { recursive: true })
-    writeFileSync(projectsFile(), `${JSON.stringify({ recent: list } satisfies ProjectsFile, null, 2)}\n`)
+    writeJsonAtomic(projectsFile(), { recent: list } satisfies ProjectsFile)
   } catch {
     // write failure must never break startup
   }
@@ -105,8 +96,7 @@ function saveRecent(list: RecentProject[]): void {
 
 export function loadRecent(): RecentProject[] {
   try {
-    const raw = readFileSync(projectsFile(), "utf8")
-    const parsed = JSON.parse(raw) as ProjectsFile
+    const parsed = readJson<ProjectsFile>(projectsFile())
     const items = Array.isArray(parsed?.recent) ? parsed.recent : []
     const cleaned = items
       .filter((r): r is RecentProject => typeof r?.path === "string" && typeof r?.lastOpened === "number")
