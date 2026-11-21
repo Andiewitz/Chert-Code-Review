@@ -19,6 +19,8 @@ export interface HarnessDetection {
   available: boolean
   /** The CLI's version string, when it printed one. */
   version: string | null
+  /** Why it is unavailable, in words the TUI can show. Absent when available. */
+  reason?: string
 }
 
 export type HarnessMode = "author-context" | "fresh"
@@ -45,8 +47,11 @@ export interface ReviewSession {
 export interface HarnessAdapter {
   id: string
   label: string
-  /** Whether the CLI is installed and runnable. Cached by the adapter. */
-  detect(): HarnessDetection
+  /**
+   * Whether the harness can be used right now. The opencode adapter also needs
+   * its server, so this can be a network probe and is not cached forever.
+   */
+  detect(): Promise<HarnessDetection>
   /** Recent sessions for this project, newest first. Empty when unsupported. */
   listSessions(projectRoot: string): SessionInfo[]
   /** Fork `baseSessionId`, or start fresh, and return the session to resume. */

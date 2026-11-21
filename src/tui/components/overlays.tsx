@@ -1,119 +1,77 @@
-// The overlay screens: the menu, the all-files list, the review-source picker,
-// the highlight menu and the recent-projects home screen. Purely presentational:
-// every piece of state is read through a prop getter.
+// The floating pickers: menu, review source and recent projects. Each opens
+// over the review as a drop-up panel, so the screen you were reading stays
+// where it was. Purely presentational: every piece of state is a prop.
 
 import { Show } from "solid-js"
-import type { ScrollBoxRenderable, SelectOption } from "@opentui/core"
-import type { Highlight } from "../../highlights"
+import { basename } from "node:path"
+import type { SelectOption } from "@opentui/core"
 import type { Suggestion } from "../commands/registry"
-import { ATTR, COLORS } from "../theme"
-import { HomeScreen } from "./home-screen"
-import { RowList } from "./row-list"
-import { Wordmark } from "./wordmark"
+import { displayPath } from "../../projects"
+import { shortenPath } from "../format"
+import { DropUp } from "./drop-up"
 
 export interface OverlaysProps {
   menuOpen(): boolean
   menuIndex(): number
   menuOptions(): SelectOption[]
-  allFilesOpen(): boolean
-  allFilesIndex(): number
-  allFilesOptions(): SelectOption[]
-  fileCount(): number
-  onAllFilesScroll(el: ScrollBoxRenderable): void
   reviewPickerOpen(): boolean
   reviewPickerIndex(): number
   allReviewTargets(): Suggestion[]
-  onReviewPickerScroll(el: ScrollBoxRenderable): void
-  highlightMenuOpen(): boolean
-  highlightMenuIndex(): number
-  highlightForRowIndex(index: number): Highlight | undefined
-  codeCursorRow(): number
   projectsOpen(): boolean
   projectsIndex(): number
+  hasProject(): boolean
   loadRecent(): Array<{ path: string }>
+  /** Rows a panel may show before it windows over the selection. */
+  maxRows: number
 }
 
+const HINT = "\u2191\u2193 choose \u00b7 Enter \u00b7 Esc close"
+
 export function Overlays(props: OverlaysProps) {
+  const options = (list: () => SelectOption[]) => () =>
+    list().map((option) => ({ label: option.name, hint: option.description }))
+
   return (
     <>
       <Show when={props.menuOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-          <box height={1} flexShrink={0} />
-          <Wordmark />
-          <box height={1} flexShrink={0} />
-          <text fg={COLORS().dim} attributes={ATTR.dim}>
-            {"menu"}
-          </text>
-          <box height={1} flexShrink={0} />
-          <RowList
-            rows={() => props.menuOptions().map((o) => ({ label: o.name, hint: o.description }))}
-            index={() => props.menuIndex()}
-          />
-          <box flexGrow={1} />
-        </box>
-      </Show>
-      <Show when={props.allFilesOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-          <box height={1} flexShrink={0} />
-          <text fg={COLORS().purple} attributes={ATTR.bold}>{`All files (${props.fileCount()})`}</text>
-          <box height={1} flexShrink={0} />
-          <scrollbox
-            ref={(el: ScrollBoxRenderable) => {
-              props.onAllFilesScroll(el)
-            }}
-            flexGrow={1}
-            backgroundColor={COLORS().bg}
-          >
-            <RowList
-              rows={() => props.allFilesOptions().map((o) => ({ label: o.name, hint: o.description }))}
-              index={() => props.allFilesIndex()}
-            />
-          </scrollbox>
-          <box flexGrow={1} />
-        </box>
+        <DropUp
+          title="Menu"
+          hint={HINT}
+          rows={options(props.menuOptions)}
+          index={props.menuIndex}
+          empty=""
+          maxRows={props.maxRows}
+        />
       </Show>
       <Show when={props.reviewPickerOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2}>
-          <box height={1} flexShrink={0} />
-          <text fg={COLORS().purple} attributes={ATTR.bold}>
-            {"Review source"}
-          </text>
-          <box height={1} flexShrink={0} />
-          <scrollbox
-            ref={(el: ScrollBoxRenderable) => {
-              props.onReviewPickerScroll(el)
-            }}
-            flexGrow={1}
-            backgroundColor={COLORS().bg}
-          >
-            <RowList
-              rows={() => props.allReviewTargets().map((s) => ({ label: s.label, hint: s.description }))}
-              index={() => props.reviewPickerIndex()}
-            />
-          </scrollbox>
-          <box flexGrow={1} />
-        </box>
+        <DropUp
+          title="Review source"
+          hint={HINT}
+          rows={() =>
+            props.allReviewTargets().map((target) => ({
+              label: target.label,
+              hint: target.description,
+            }))
+          }
+          index={props.reviewPickerIndex}
+          empty="Nothing to review yet."
+          maxRows={props.maxRows}
+        />
       </Show>
-      <Show when={props.highlightMenuOpen()}>
-        <box flexGrow={1} flexDirection="column" paddingLeft={1}>
-          <text fg={COLORS().bright}>Highlight</text>
-          <box height={1} />
-          <text
-            fg={props.highlightMenuIndex() === 0 ? COLORS().bright : COLORS().dim}
-          >{`${props.highlightMenuIndex() === 0 ? "▸ " : "  "}Ask the AI about these lines`}</text>
-          <text
-            fg={props.highlightMenuIndex() === 1 ? COLORS().bright : COLORS().dim}
-          >{`${props.highlightMenuIndex() === 1 ? "▸ " : "  "}Edit note`}</text>
-          <text
-            fg={props.highlightMenuIndex() === 2 ? COLORS().bright : COLORS().dim}
-          >{`${props.highlightMenuIndex() === 2 ? "▸ " : "  "}${props.highlightForRowIndex(props.codeCursorRow())?.by === "ai" ? "Dismiss" : "Remove"}`}</text>
-          <text
-            fg={props.highlightMenuIndex() === 3 ? COLORS().bright : COLORS().dim}
-          >{`${props.highlightMenuIndex() === 3 ? "▸ " : "  "}Close`}</text>
-        </box>
-      </Show>
-      <Show when={props.projectsOpen()}>
-        <HomeScreen recents={() => props.loadRecent()} index={() => props.projectsIndex()} />
+      <Show when={props.projectsOpen() && props.hasProject()}>
+        <DropUp
+          title="Recent projects"
+          hint={HINT}
+          rows={() =>
+            props.loadRecent().map((recent) => ({
+              label: basename(recent.path),
+              hint: shortenPath(displayPath(recent.path), 46),
+            }))
+          }
+          index={props.projectsIndex}
+          empty="No saved projects yet \u2014 /cd <path> to open one."
+          maxRows={props.maxRows}
+        />
       </Show>
     </>
   )

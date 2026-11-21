@@ -44,9 +44,8 @@ export async function runAgentTurn(request: AgentTurnRequest): Promise<AgentTurn
   const { connectorId } = request
 
   if (connectorId === "opencode") {
-    if (!opencode.detect().available) {
-      return failed(noAiConnectedMessage(PROVIDERS[0]))
-    }
+    const detection = await opencode.detect()
+    if (!detection.available) return failed(detection.reason ?? noAiConnectedMessage(PROVIDERS[0]))
     const answer = await opencode.askOnce(request.projectRoot, request.prompt)
     return { text: tailLines(answer.trim(), MAX_AGENT_ANSWER_LINES), isError: false }
   }

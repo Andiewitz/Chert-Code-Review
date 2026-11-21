@@ -28,18 +28,23 @@ Keys inside the TUI:
 No modes: if the prompt box is empty, keys control the screen; if it has text,
 typing and Enter go to the text.
 
-Review screen (the files and diff fill the top; the agent's five-line answer band, the prompt and the action bar sit at the bottom):
+Review screen (the files and diff fill the top; the agent's answer band, the prompt and a single hint line with the action buttons sit at the bottom):
 
 | key              | action                                                                                    |
 | ---------------- | ----------------------------------------------------------------------------------------- |
 | `Up` / `Down`    | previous / next file                                                                      |
 | `Left` / `Right` | move across the action bar: Back · Next                                                   |
 | `Enter`          | run the highlighted action                                                                |
-| `Space`          | mark the file reviewed                                                                    |
-| drag (mouse)     | highlight the lines you drag over; click a highlighted line to edit, ask or dismiss       |
-| `PgUp` / `PgDn`  | scroll the answer pane (when open) or the diff                                            |
-| `Esc`            | open the menu (or close it)                                                               |
+| `Space`          | approve this file and move to the next unreviewed one                                     |
+| drag (mouse)     | copy the lines you drag over to the clipboard, ready to paste into the prompt            |
+| `PgUp` / `PgDn`  | scroll the answer pane                                                                   |
+| `Esc`            | open or close the menu; dismiss a message                                                  |
 | `Ctrl+C`         | quit                                                                                      |
+
+A drag over the diff copies the lines (with their file and line numbers) and says
+so; paste them into the prompt and the agent sees exactly what you highlighted.
+The answer band scrolls with the mouse wheel or `PgUp`/`PgDn`, and dragging its
+top edge makes it taller or shorter.
 
 Home screen / recent projects (the start screen when you launch outside a git repo,
 and Esc → Recent projects): the purple `chert` wordmark, then your recent projects.
@@ -69,7 +74,26 @@ Other:
 
 The `>` row at the bottom is the universal entry point (Claude Code-style):
 `/` runs commands, plain text talks to the [opencode](https://opencode.ai) agent
-in the current project directory (opencode must be installed; no API keys needed).
+in the current project directory (opencode must be installed and configured with
+a model; chert needs no API keys).
+
+By default chert calls the `opencode` CLI and lets it use its own background
+service, so there is nothing to start. To use a server you run yourself (one
+process owning sessions and tool state), start it with a known password and point
+chert at it:
+
+```
+OPENCODE_PASSWORD=chert-dev opencode serve --port 4096
+# in the terminal that runs chert:
+export OPENCODE_PASSWORD=chert-dev
+export CHERT_OPENCODE_SERVER=http://127.0.0.1:4096
+bun dev
+```
+
+An explicit server needs `OPENCODE_PASSWORD` in chert's environment because a
+standalone `opencode serve` prints a password on startup and refuses clients that
+do not present it. `CHERT_OPENCODE_SERVER` accepts a URL or a bare `host:port`.
+See [docs/opencode.md](docs/opencode.md) for the session/fork details.
 
 ```
 <!-- commands:start -->

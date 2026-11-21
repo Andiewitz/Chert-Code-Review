@@ -6,8 +6,7 @@ import type { CommandContext } from "./context"
 
 export function walkCommand(ctx: CommandContext): void {
   if (!ctx.hasProject()) {
-    ctx.addEntry("system", "Open a project first: /cd <name or path>")
-    ctx.setView("log")
+    ctx.showError("Open a project first: /cd <name or path>")
     return
   }
   ctx.startWalk(ctx.args)

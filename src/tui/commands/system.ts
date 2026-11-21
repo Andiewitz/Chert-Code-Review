@@ -32,8 +32,7 @@ export function homeCommand(ctx: CommandContext): void {
 export function runShellCommand(ctx: CommandContext): void {
   const command = ctx.args
   if (command === "") {
-    ctx.addEntry("error", "usage: /run <command>")
-    ctx.setView("log")
+    ctx.showError("usage: /run <command>")
     return
   }
   ctx.setView("log")
@@ -63,11 +62,10 @@ export function themesCommand(ctx: CommandContext): void {
   }
   const resolved = THEME_ALIASES[arg]
   if (!resolved) {
-    ctx.addEntry("error", `unknown theme "${ctx.args}" — try: default, dark-contrast, whiteout, github`)
+    ctx.showError(`unknown theme "${ctx.args}" — try: default, dark-contrast, whiteout, github`)
     return
   }
   setTheme(resolved)
-  ctx.addEntry("system", `theme: ${THEME_LABELS[resolved]}`)
   ctx.setStatus(`theme: ${THEME_LABELS[resolved]}`)
 }
 

@@ -42,7 +42,8 @@ export function parseResult(stdout: string): ClaudeResult {
   if (!isRecord(parsed)) {
     return { sessionId: null, text: trimmed, error: trimmed === "" ? "claude printed nothing" : null }
   }
-  const sessionId = typeof parsed.session_id === "string" && parsed.session_id !== "" ? parsed.session_id : null
+  const sessionId =
+    typeof parsed.session_id === "string" && parsed.session_id !== "" ? parsed.session_id : null
   const text = typeof parsed.result === "string" ? parsed.result : ""
   const error = parsed.is_error === true ? text || "claude reported an error" : null
   return { sessionId, text, error }
@@ -112,7 +113,13 @@ async function startClaude(
   if (forkOf !== undefined && id === forkOf) {
     throw new Error("claude did not fork; refusing to write into your original conversation")
   }
-  return makeSession(id, forkOf === undefined ? "fresh" : "author-context", command, startOptions.projectRoot, timeoutMs)
+  return makeSession(
+    id,
+    forkOf === undefined ? "fresh" : "author-context",
+    command,
+    startOptions.projectRoot,
+    timeoutMs,
+  )
 }
 
 export interface ClaudeHarnessOptions {
@@ -126,7 +133,7 @@ export function createClaudeHarness(options: ClaudeHarnessOptions = {}): Harness
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   let detection: HarnessDetection | null = null
 
-  function detect(): HarnessDetection {
+  async function detect(): Promise<HarnessDetection> {
     if (detection === null) {
       const version = probeVersion(command)
       detection = { available: version !== null, version }
@@ -135,12 +142,12 @@ export function createClaudeHarness(options: ClaudeHarnessOptions = {}): Harness
   }
 
   async function start(startOptions: StartOptions): Promise<ReviewSession> {
-    if (!detect().available) throw new Error(`${command} is not installed`)
+    if (!(await detect()).available) throw new Error(`${command} is not installed`)
     return startClaude(command, startOptions, timeoutMs)
   }
 
   async function askOnce(projectRoot: string, request: string): Promise<string> {
-    if (!detect().available) throw new Error(`${command} is not installed`)
+    if (!(await detect()).available) throw new Error(`${command} is not installed`)
     const argv = argvFor(command, request, [])
     return requireAnswer(await runOnce(argv, { cwd: projectRoot, timeoutMs }))
   }

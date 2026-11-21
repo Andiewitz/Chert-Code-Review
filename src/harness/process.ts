@@ -44,7 +44,7 @@ export function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`
 }
 
-function describeExit(exitCode: number, stderr: string): string {
+export function describeExit(exitCode: number, stderr: string): string {
   const detail = stderr.trim()
   if (detail !== "") return detail
   return `exited with code ${exitCode}`

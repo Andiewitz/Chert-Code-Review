@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createOpencodeHarness, parseEvents, parseSessionList } from "./opencode"
+import {
+  createOpencodeHarness,
+  parseEvents,
+  parseSessionList,
+  probeServer,
+  resolveServerUrl,
+} from "./opencode"
 import { OPENING_PROMPT } from "./types"
 
 const skip = process.platform === "win32"
@@ -81,9 +87,43 @@ beforeEach(() => {
   fake = installFakeCli()
 })
 
+beforeEach(() => {
+  delete process.env.CHERT_OPENCODE_SERVER
+})
+
 afterEach(() => {
   delete process.env.FAKE_LOG
   delete process.env.FAKE_FORK_ID
+})
+
+describe("resolveServerUrl", () => {
+  test("accepts a URL or a bare host:port, and drops a trailing slash", () => {
+    expect(resolveServerUrl("http://10.0.0.2:5000/")).toBe("http://10.0.0.2:5000")
+    expect(resolveServerUrl("localhost:4096")).toBe("http://localhost:4096")
+  })
+
+  test("returns null when no server was configured", () => {
+    expect(resolveServerUrl("")).toBeNull()
+    expect(resolveServerUrl()).toBeNull()
+  })
+})
+
+describe("probeServer", () => {
+  test("treats a 2xx as up even when the body is not JSON", async () => {
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => new Response("<!doctype html><title>OpenCode</title>", { status: 200 }),
+    })
+    try {
+      expect(await probeServer(`http://127.0.0.1:${server.port}`)).toEqual({
+        ok: true,
+        version: null,
+      })
+    } finally {
+      server.stop(true)
+    }
+  })
 })
 
 describe("parseEvents", () => {
@@ -104,7 +144,8 @@ describe("parseEvents", () => {
   })
 
   test("surfaces an error event's message", () => {
-    const stdout = '{"type":"error","sessionID":"ses_1","error":{"name":"ProviderError","data":{"message":"model overloaded"}}}'
+    const stdout =
+      '{"type":"error","sessionID":"ses_1","error":{"name":"ProviderError","data":{"message":"model overloaded"}}}'
     expect(parseEvents(stdout)).toMatchObject({ sessionId: "ses_1", error: "model overloaded", text: "" })
   })
 
@@ -147,30 +188,56 @@ describe("parseSessionList", () => {
   })
 })
 
+const liveServer = async () => ({ ok: true, version: "2.3.0" })
+const noServer = async () => ({ ok: false, version: null })
+
+/** A harness pointed at the fake CLI, with a stubbed server probe. */
+function harness(options: Parameters<typeof createOpencodeHarness>[0] = {}) {
+  return createOpencodeHarness({ command: fake.command, timeoutMs: 10_000, probe: liveServer, ...options })
+}
+
 describe("opencode harness", () => {
-  test("detects the version and reports a missing CLI as unavailable", () => {
-    expect(createOpencodeHarness({ command: fake.command }).detect()).toEqual({
-      available: true,
-      version: "2.3.0",
-    })
-    expect(createOpencodeHarness({ command: "/nonexistent/chert-opencode" }).detect()).toEqual({
+  test("detects the version and reports a missing CLI as unavailable", async () => {
+    expect(await harness().detect()).toEqual({ available: true, version: "2.3.0" })
+    expect(await harness({ command: "/nonexistent/chert-opencode" }).detect()).toMatchObject({
       available: false,
       version: null,
     })
   })
 
+  test("needs a running server only when one is configured", async () => {
+    const closed = harness({ probe: noServer, serverUrl: "127.0.0.1:4999" })
+    const found = await closed.detect()
+    expect(found.available).toBe(false)
+    expect(found.reason).toContain("No opencode server at http://127.0.0.1:4999")
+    expect(found.reason).toContain("opencode serve")
+    await expect(closed.start({ projectRoot: process.cwd() })).rejects.toThrow("opencode serve")
+  })
+
+  test.skipIf(skip)("uses opencode's background service when no server is configured", async () => {
+    await harness().askOnce(process.cwd(), "hello")
+    expect(fake.calls()[0]).not.toContain("--server")
+  })
+
+  test.skipIf(skip)("attaches every call to the configured server", async () => {
+    await harness({ serverUrl: "localhost:4096" }).askOnce(process.cwd(), "hello")
+    const argv = fake.calls()[0]
+    expect(argv[argv.indexOf("--server") + 1]).toBe("http://localhost:4096")
+  })
+
   test.skipIf(skip)("lists this project's sessions newest first", () => {
-    const harness = createOpencodeHarness({ command: fake.command })
-    expect(harness.listSessions(process.cwd()).map((session) => session.id)).toEqual([
-      "ses_new",
-      "ses_mid",
-      "ses_old",
-    ])
+    expect(
+      harness()
+        .listSessions(process.cwd())
+        .map((session) => session.id),
+    ).toEqual(["ses_new", "ses_mid", "ses_old"])
   })
 
   test.skipIf(skip)("forks once and resumes only the fork", async () => {
-    const harness = createOpencodeHarness({ command: fake.command, timeoutMs: 10_000 })
-    const session = await harness.start({ projectRoot: process.cwd(), baseSessionId: "ses_author" })
+    const session = await harness({ serverUrl: "127.0.0.1:4096" }).start({
+      projectRoot: process.cwd(),
+      baseSessionId: "ses_author",
+    })
 
     expect(session.mode).toBe("author-context")
     expect(session.id).toBe("ses_forked")
@@ -182,7 +249,8 @@ describe("opencode harness", () => {
     session.close()
 
     const calls = fake.calls()
-    // Start: read-only agent, the fork, and the opening prompt.
+    // Start: read-only agent, the configured server, the fork, the opening prompt.
+    expect(calls[0][calls[0].indexOf("--server") + 1]).toBe("http://127.0.0.1:4096")
     expect(calls[0]).toContain("--fork")
     expect(calls[0].slice(calls[0].indexOf("--session") + 1, calls[0].indexOf("--session") + 2)).toEqual([
       "ses_author",
@@ -196,8 +264,7 @@ describe("opencode harness", () => {
   })
 
   test.skipIf(skip)("starts a fresh session when there is no base", async () => {
-    const harness = createOpencodeHarness({ command: fake.command, timeoutMs: 10_000 })
-    const session = await harness.start({ projectRoot: process.cwd(), title: "review" })
+    const session = await harness().start({ projectRoot: process.cwd(), title: "review" })
     expect(session.mode).toBe("fresh")
     expect(session.id).toBe("ses_fresh")
     expect(fake.calls()[0]).not.toContain("--fork")
@@ -205,28 +272,28 @@ describe("opencode harness", () => {
 
   test.skipIf(skip)("refuses a fork that came back as the original session", async () => {
     process.env.FAKE_FORK_ID = "ses_author"
-    const harness = createOpencodeHarness({ command: fake.command, timeoutMs: 10_000 })
-    await expect(harness.start({ projectRoot: process.cwd(), baseSessionId: "ses_author" })).rejects.toThrow(
-      "refusing to write into your original conversation",
-    )
+    await expect(
+      harness().start({ projectRoot: process.cwd(), baseSessionId: "ses_author" }),
+    ).rejects.toThrow("refusing to write into your original conversation")
   })
 
   test.skipIf(skip)("askOnce keeps a plain prompt out of the session list", async () => {
-    const harness = createOpencodeHarness({ command: fake.command, timeoutMs: 10_000 })
-    expect(await harness.askOnce(process.cwd(), "hello")).toBe("answer:hello")
+    expect(await harness().askOnce(process.cwd(), "hello")).toBe("answer:hello")
     expect(fake.calls()[0]).toContain("--archived")
     expect(fake.calls()[0]).toContain("plan")
   })
 
   test.skipIf(skip)("reports a failing run and an error event", async () => {
-    const harness = createOpencodeHarness({ command: fake.command, timeoutMs: 10_000 })
-    await expect(harness.askOnce(process.cwd(), "fail")).rejects.toThrow("boom")
-    await expect(harness.askOnce(process.cwd(), "error-event")).rejects.toThrow("model overloaded")
+    const adapter = harness()
+    await expect(adapter.askOnce(process.cwd(), "fail")).rejects.toThrow("boom")
+    await expect(adapter.askOnce(process.cwd(), "error-event")).rejects.toThrow("model overloaded")
   })
 
   test.skipIf(skip)("close cancels a call that is still running", async () => {
-    const harness = createOpencodeHarness({ command: fake.command, timeoutMs: 30_000 })
-    const session = await harness.start({ projectRoot: process.cwd(), baseSessionId: "ses_author" })
+    const session = await harness({ timeoutMs: 30_000 }).start({
+      projectRoot: process.cwd(),
+      baseSessionId: "ses_author",
+    })
     const pending = session.ask("slow")
     setTimeout(() => session.close(), 150)
     await expect(pending).rejects.toThrow("cancelled")

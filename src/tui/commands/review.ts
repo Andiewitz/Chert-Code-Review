@@ -39,8 +39,7 @@ export function reviewCommand(ctx: CommandContext): void {
   if (sub === "last") {
     const sha = resolveSha(ctx.projectRoot(), "HEAD")
     if (sha === null) {
-      ctx.addEntry("error", "No commits yet.")
-      ctx.setView("log")
+      ctx.showError("No commits yet.")
       return
     }
     ctx.applyReviewSource({
@@ -55,14 +54,12 @@ export function reviewCommand(ctx: CommandContext): void {
   if (sub === "commit") {
     const ref = tokens[1] ?? ""
     if (ref === "" || !validateRef(ctx.projectRoot(), ref)) {
-      ctx.addEntry("error", `Not a valid commit: "${ref}".`)
-      ctx.setView("log")
+      ctx.showError(`Not a valid commit: "${ref}".`)
       return
     }
     const sha = resolveSha(ctx.projectRoot(), ref)
     if (sha === null) {
-      ctx.addEntry("error", `Could not resolve "${ref}".`)
-      ctx.setView("log")
+      ctx.showError(`Could not resolve "${ref}".`)
       return
     }
     ctx.applyReviewSource({
@@ -79,8 +76,7 @@ export function reviewCommand(ctx: CommandContext): void {
     let base: string | null
     if (baseArg !== "") {
       if (!validateRef(ctx.projectRoot(), baseArg)) {
-        ctx.addEntry("error", `Not a valid branch: "${baseArg}".`)
-        ctx.setView("log")
+        ctx.showError(`Not a valid branch: "${baseArg}".`)
         return
       }
       base = baseArg
@@ -88,20 +84,17 @@ export function reviewCommand(ctx: CommandContext): void {
       base = resolveReviewBase(ctx.projectRoot())
     }
     if (base === null) {
-      ctx.addEntry("error", "I couldn't find the main branch. Type /review branch <name>.")
-      ctx.setView("log")
+      ctx.showError("I couldn't find the main branch. Type /review branch <name>.")
       return
     }
     const current = currentBranch(ctx.projectRoot())
     if (current === base) {
-      ctx.addEntry("system", `You're already on ${base}; staying on uncommitted changes.`)
-      ctx.setView("log")
+      ctx.showNotice(`You're already on ${base}; staying on uncommitted changes.`)
       return
     }
     const split = tryOr(() => mergeBase(ctx.projectRoot(), current, base), null)
     if (split === null) {
-      ctx.addEntry("error", `Could not find where ${current} split from ${base}.`)
-      ctx.setView("log")
+      ctx.showError(`Could not find where ${current} split from ${base}.`)
       return
     }
     ctx.applyReviewSource({ kind: "branch", base, mergeBase: split })
@@ -109,8 +102,7 @@ export function reviewCommand(ctx: CommandContext): void {
     return
   }
 
-  ctx.addEntry("error", `Unknown review source "${sub}". Try /review with no arguments.`)
-  ctx.setView("log")
+  ctx.showError(`Unknown review source "${sub}". Try /review with no arguments.`)
 }
 
 export function logCommand(ctx: CommandContext): void {
@@ -122,23 +114,19 @@ export function highlightsCommand(ctx: CommandContext): void {
   const tokens = ctx.args.split(/\s+/).filter(Boolean)
   if (tokens[0] === "clear") {
     if (tokens[1] !== "yes") {
-      ctx.addEntry(
-        "system",
+      ctx.showNotice(
         `This will delete ${ctx.highlights().length} saved highlights. Type /highlights clear yes to confirm.`,
       )
-      ctx.setView("log")
       return
     }
     ctx.clearHighlights()
-    ctx.addEntry("system", "cleared all highlights")
-    ctx.setView("log")
+    ctx.showNotice("cleared all highlights")
     return
   }
 
   const highlights = ctx.highlights()
   if (highlights.length === 0) {
-    ctx.addEntry("system", "No highlights yet.")
-    ctx.setView("log")
+    ctx.showNotice("No highlights yet.")
     return
   }
   const lines = highlights.map((highlight) => {
@@ -182,8 +170,8 @@ export function exportCommand(ctx: CommandContext): void {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, "last-review.md"), markdown)
     ctx.addEntry("system", `Exported to ${join(dir, "last-review.md")}\n\n${markdown}`)
+    ctx.setView("log")
   } catch (error) {
-    ctx.addEntry("error", `export failed: ${error instanceof Error ? error.message : String(error)}`)
+    ctx.showError(`export failed: ${error instanceof Error ? error.message : String(error)}`)
   }
-  ctx.setView("log")
 }

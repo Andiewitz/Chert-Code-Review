@@ -20,7 +20,7 @@ describe("fake harness", () => {
     const harness = createFakeHarness()
     const session = await harness.start({ projectRoot: "/repo" })
     expect(session.mode).toBe("fresh")
-    expect(harness.detect()).toEqual({ available: true, version: "0.0.0-fake" })
+    expect(await harness.detect()).toEqual({ available: true, version: "0.0.0-fake" })
   })
 
   test("counts closes and answers scripted requests", async () => {

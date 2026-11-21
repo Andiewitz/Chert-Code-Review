@@ -90,7 +90,7 @@ export function createFakeHarness(options: FakeHarnessOptions = {}): FakeHarness
     get closed(): number {
       return state.closed
     },
-    detect(): HarnessDetection {
+    detect: async (): Promise<HarnessDetection> => {
       return { available: options.available ?? true, version: options.version ?? "0.0.0-fake" }
     },
     listSessions(_projectRoot: string): SessionInfo[] {

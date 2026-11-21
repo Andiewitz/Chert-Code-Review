@@ -1,4 +1,6 @@
 // Navigation commands: which project and which file the review is looking at.
+// Failures stay on the current screen: they report through `showError`, never
+// by switching the view to the transcript.
 
 import { basename } from "node:path"
 import { displayPath, forgetProject, loadRecent, parseCdArgument, resolveProject } from "../../projects"
@@ -8,8 +10,7 @@ const NO_PROJECT = "No project open. Press Esc, then pick Pick another project."
 
 export function refreshCommand(ctx: CommandContext): void {
   if (!ctx.hasProject()) {
-    ctx.addEntry("error", NO_PROJECT)
-    ctx.setView("log")
+    ctx.showError(NO_PROJECT)
     return
   }
   ctx.refresh()
@@ -18,8 +19,7 @@ export function refreshCommand(ctx: CommandContext): void {
 
 export function openCommand(ctx: CommandContext): void {
   if (!ctx.hasProject()) {
-    ctx.addEntry("error", NO_PROJECT)
-    ctx.setView("log")
+    ctx.showError(NO_PROJECT)
     return
   }
   const query = ctx.args.toLowerCase()
@@ -31,8 +31,7 @@ export function openCommand(ctx: CommandContext): void {
       file.path.toLowerCase().includes(query),
   )
   if (index === -1) {
-    ctx.addEntry("error", `no file matching "${ctx.args}"`)
-    ctx.setView("log")
+    ctx.showError(`no file matching "${ctx.args}"`)
     return
   }
   ctx.setView("review")
@@ -42,16 +41,14 @@ export function openCommand(ctx: CommandContext): void {
 
 export function treeCommand(ctx: CommandContext): void {
   if (!ctx.hasProject()) {
-    ctx.addEntry("error", NO_PROJECT)
-    ctx.setView("log")
+    ctx.showError(NO_PROJECT)
     return
   }
   ctx.openTree()
 }
 
 export function cwdCommand(ctx: CommandContext): void {
-  ctx.addEntry("system", `project: ${ctx.projectRoot()}`)
-  ctx.setView("log")
+  ctx.showNotice(`project: ${ctx.projectRoot()}`)
 }
 
 export function projectsCommand(ctx: CommandContext): void {
@@ -69,14 +66,12 @@ export function cdCommand(ctx: CommandContext): void {
   if (rest === "-") {
     const target = ctx.previousProjectPath()
     if (target === null) {
-      ctx.addEntry("error", "No previous project.")
-      ctx.setView("log")
+      ctx.showError("No previous project.")
       return
     }
     const root = ctx.openProjectAt(target)
     if (root === undefined) {
-      ctx.addEntry("error", `that folder isn't a git project: ${target}`)
-      ctx.setView("log")
+      ctx.showError(`that folder isn't a git project: ${target}`)
       return
     }
     ctx.setStatus(`opened ${basename(root) || root}`)
@@ -89,8 +84,7 @@ export function cdCommand(ctx: CommandContext): void {
   if (result.kind === "open") {
     const root = ctx.openProjectAt(result.root)
     if (root === undefined) {
-      ctx.addEntry("error", `that folder isn't a git project: ${result.root}`)
-      ctx.setView("log")
+      ctx.showError(`that folder isn't a git project: ${result.root}`)
       return
     }
     ctx.setStatus(`opened ${result.name}`)
@@ -101,31 +95,25 @@ export function cdCommand(ctx: CommandContext): void {
     const lines = result.matches.map(
       (match) => `  ${basename(match.path).padEnd(20)}  ${displayPath(match.path)}`,
     )
-    ctx.addEntry(
-      "system",
+    ctx.showError(
       `Several saved projects match "${query}":\n${lines.join("\n")}\ntype more letters or the full path`,
     )
-    ctx.setView("log")
     return
   }
   if (result.kind === "contains") {
-    ctx.addEntry(
-      "system",
+    ctx.showNotice(
       `That folder isn't a git project, but it contains: ${result.repoNames.join(", ")}. Try /cd ${result.repoNames[0]}.`,
     )
-    ctx.setView("log")
     return
   }
-  ctx.addEntry("error", `No project or folder called "${query}". Type /cd alone to see your saved projects.`)
-  ctx.setView("log")
+  ctx.showError(`No project or folder called "${query}". Type /cd alone to see your saved projects.`)
 }
 
 /** /forget accepts a name or a path; the raw name is tried first. */
 export function forgetCommand(ctx: CommandContext): void {
   const rest = ctx.args
   if (rest === "") {
-    ctx.addEntry("error", "usage: /forget <name or path>")
-    ctx.setView("log")
+    ctx.showError("usage: /forget <name or path>")
     return
   }
   const rawName = rest.trim()
@@ -144,17 +132,14 @@ export function forgetCommand(ctx: CommandContext): void {
     if (matches.length === 1) {
       match = matches[0]
     } else if (matches.length > 1) {
-      ctx.addEntry("error", `Several saved projects match "${query}". Type more letters.`)
-      ctx.setView("log")
+      ctx.showError(`Several saved projects match "${query}". Type more letters.`)
       return
     }
   }
   if (match === undefined) {
-    ctx.addEntry("error", `No saved project called "${query}".`)
-    ctx.setView("log")
+    ctx.showError(`No saved project called "${query}".`)
     return
   }
   forgetProject(match.path)
-  ctx.addEntry("system", "removed from your list (your files were not touched)")
-  ctx.setView("log")
+  ctx.showNotice(`removed from your list: ${basename(match.path)} (your files were not touched)`)
 }

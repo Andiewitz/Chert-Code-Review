@@ -18,6 +18,10 @@ export interface CommandContext {
   // Transcript and view
   addEntry(kind: EntryKind, text: string): void
   setStatus(text: string): void
+  /** Report a failure in place: no view change, banner stays until dismissed. */
+  showError(text: string): void
+  /** Report a passing note in place. */
+  showNotice(text: string): void
   setView(view: MainView): void
   setPromptValue(value: string): void
   openMenu(): void

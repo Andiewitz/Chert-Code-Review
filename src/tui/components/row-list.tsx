@@ -8,7 +8,7 @@ export interface PickerRow {
   hint?: string
 }
 
-export function RowList(props: { rows: () => PickerRow[]; index: () => number }) {
+export function RowList(props: { rows: () => PickerRow[]; index: () => number; baseBg?: string }) {
   return (
     <For each={props.rows()}>
       {(row, i) => {
@@ -18,7 +18,7 @@ export function RowList(props: { rows: () => PickerRow[]; index: () => number })
             flexDirection="row"
             height={1}
             flexShrink={0}
-            backgroundColor={active() ? COLORS().selectedBg : COLORS().bg}
+            backgroundColor={active() ? COLORS().selectedBg : (props.baseBg ?? COLORS().bg)}
           >
             <text fg={active() ? COLORS().purpleBright : COLORS().rule}>{active() ? "  ▸ " : "    "}</text>
             <text

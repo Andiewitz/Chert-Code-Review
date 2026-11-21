@@ -32,12 +32,29 @@ prompts; `/walk` requires a harness.
 
 ## Harnesses
 
-| harness       | detection          | session discovery            | isolation                                  |
-| ------------- | ------------------ | ---------------------------- | ------------------------------------------ |
-| `opencode`    | `opencode --version` | `opencode session list --format json` | `--agent plan` (edits denied)     |
-| `claude-code` | `claude --version`   | typed id (`/walk <id>`)       | `--tools "Read,Grep,Glob"`      |
+| harness       | detection                                      | session discovery                     | isolation                     |
+| ------------- | ---------------------------------------------- | ------------------------------------- | ----------------------------- |
+| `opencode`    | `opencode --version` (+ server probe when set) | `opencode session list --format json` | `--agent plan` (edits denied) |
+| `claude-code` | `claude --version`                             | typed id (`/walk <id>`)               | `--tools "Read,Grep,Glob"`    |
 
-Verified against opencode 2.3.0 and the Claude Code CLI reference. Each adapter
+By default every opencode call is `opencode run …` with no server flag, so the
+CLI uses its own background service: one process owns sessions, configuration and
+tool state, and there is nothing for the user to start. To use a server you
+manage yourself, set `CHERT_OPENCODE_SERVER` (a URL or `host:port`); every call
+then becomes `opencode run --server <url> …`. A standalone server needs
+`OPENCODE_PASSWORD` in the environment of both the server and chert:
+
+```
+OPENCODE_PASSWORD=chert-dev opencode serve --port 4096
+export OPENCODE_PASSWORD=chert-dev
+export CHERT_OPENCODE_SERVER=http://127.0.0.1:4096
+```
+
+chert probes that address before forking. If nothing answers, `/walk` stops
+before forking and says so. If `CHERT_OPENCODE_SERVER` is unset, there is no
+probe: the background service starts on demand.
+
+Verified against opencode 2.3.2 and the Claude Code CLI reference. Each adapter
 spawns its CLI in exactly one place (`src/harness/opencode.ts`,
 `src/harness/claude.ts`). No adapter ever passes an auto-approve or
 skip-permissions flag; `bun run check` fails if one appears.
@@ -49,6 +66,10 @@ forks a session you name; `/walk fresh` starts without author context. Claude
 Code has no session-list command, so there it is `/walk <id>` or `/walk fresh`.
 Nothing is forked until you run the command: no review work happens in the
 background.
+
+A run that exits nonzero but printed a usable answer is still an answer: the CLI
+reports some warnings that way, and chert keeps the text instead of failing the
+file.
 
 The session is forked **once** at review start (`--fork` / `--fork-session`), the
 forked id is stored, and every later call resumes that fork. The original session

@@ -99,12 +99,14 @@ describe("parseResult", () => {
 })
 
 describe("claude harness", () => {
-  test("detects the version and reports a missing CLI as unavailable", () => {
-    expect(createClaudeHarness({ command: fake.command }).detect()).toEqual({
+  test("detects the version and reports a missing CLI as unavailable", async () => {
+    expect(await createClaudeHarness({ command: fake.command }).detect()).toEqual({
       available: true,
       version: "2.1.0 (Claude Code)",
     })
-    expect(createClaudeHarness({ command: "/nonexistent/chert-claude" }).detect().available).toBe(false)
+    expect((await createClaudeHarness({ command: "/nonexistent/chert-claude" }).detect()).available).toBe(
+      false,
+    )
   })
 
   test("offers no session list, because the CLI has no such command", () => {

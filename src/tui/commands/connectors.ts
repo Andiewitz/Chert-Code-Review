@@ -21,8 +21,8 @@ function describeError(error: unknown): string {
 }
 
 export function connectCommand(ctx: CommandContext): void {
-  ctx.setView("log")
   if (ctx.args === "") {
+    ctx.setView("log")
     ctx.addEntry("system", ctx.connectorsStatus())
     return
   }
@@ -30,12 +30,13 @@ export function connectCommand(ctx: CommandContext): void {
   const [providerToken, ...keyParts] = ctx.args.split(/\s+/)
   const provider = findProvider(providerToken)
   if (!provider) {
-    ctx.addEntry("error", `unknown provider "${providerToken}" — providers: ${providerIds()}`)
+    ctx.showError(`unknown provider "${providerToken}" — providers: ${providerIds()}`)
     return
   }
 
   const key = keyParts.join(" ").trim()
   if (key === "") {
+    ctx.setView("log")
     const source = keySource(provider.id)
     const keyLine =
       source === "saved"
@@ -58,26 +59,25 @@ export function connectCommand(ctx: CommandContext): void {
 
   try {
     saveProviderKey(provider.id, key)
-    ctx.addEntry("system", `saved ${provider.label} key`)
+    ctx.showNotice(`saved ${provider.label} key`)
     ctx.setStatus(`✓ ${provider.id} connected`)
   } catch (error) {
-    ctx.addEntry("error", describeError(error))
+    ctx.showError(describeError(error))
   }
 }
 
 export function disconnectCommand(ctx: CommandContext): void {
-  ctx.setView("log")
   const provider = findProvider(ctx.args.trim())
   if (!provider) {
-    ctx.addEntry("error", `unknown provider "${ctx.args}" — providers: ${providerIds()}`)
+    ctx.showError(`unknown provider "${ctx.args}" — providers: ${providerIds()}`)
     return
   }
   try {
     clearProviderKey(provider.id)
-    ctx.addEntry("system", `cleared saved key for ${provider.label} (env vars still apply)`)
+    ctx.showNotice(`cleared saved key for ${provider.label} (env vars still apply)`)
     ctx.setStatus("")
   } catch (error) {
-    ctx.addEntry("error", describeError(error))
+    ctx.showError(describeError(error))
   }
 }
 
@@ -91,14 +91,13 @@ export function useCommand(ctx: CommandContext): void {
     return
   }
 
-  ctx.setView("log")
   const provider = findProvider(id)
   if (!provider) {
-    ctx.addEntry("error", `unknown connector "${id}" — connectors: opencode, ${providerIds()}`)
+    ctx.showError(`unknown connector "${id}" — connectors: opencode, ${providerIds()}`)
     return
   }
   if (resolveKey(provider.id) === undefined) {
-    ctx.addEntry("error", `no API key for ${provider.label} — /connect ${provider.id} <key> first`)
+    ctx.showError(`no API key for ${provider.label} — /connect ${provider.id} <key> first`)
     return
   }
 
@@ -113,14 +112,12 @@ export function modelsCommand(ctx: CommandContext): void {
     findProvider(ctx.args.trim()) ??
     (ctx.connectorId() !== "opencode" ? findProvider(ctx.connectorId()) : undefined)
   if (!provider) {
-    ctx.addEntry("error", `usage: /models <provider> — providers: ${providerIds()}`)
-    ctx.setView("log")
+    ctx.showError(`usage: /models <provider> — providers: ${providerIds()}`)
     return
   }
   const key = resolveKey(provider.id)
   if (key === undefined) {
-    ctx.addEntry("error", `no API key for ${provider.label} — /connect ${provider.id} <key> first`)
-    ctx.setView("log")
+    ctx.showError(`no API key for ${provider.label} — /connect ${provider.id} <key> first`)
     return
   }
 
@@ -137,7 +134,7 @@ export function modelsCommand(ctx: CommandContext): void {
       ctx.setStatus("")
     })
     .catch((error) => {
-      ctx.addEntry("error", describeError(error))
+      ctx.showError(describeError(error))
       ctx.setStatus("")
     })
 }

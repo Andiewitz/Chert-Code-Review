@@ -1,7 +1,13 @@
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid"
 import { getTreeSitterClient } from "@opentui/core"
-import type { InputRenderable, ScrollBoxRenderable, SelectOption } from "@opentui/core"
+import type {
+  BoxRenderable,
+  InputRenderable,
+  ScrollBoxRenderable,
+  SelectOption,
+  TextRenderable,
+} from "@opentui/core"
 import { basename, join } from "node:path"
 import { currentBranch, listChangedFiles, listRecentCommits, loadPatch, resolveSha } from "../git"
 import type { ReviewSource } from "../git"
@@ -30,7 +36,7 @@ import {
 import { exportCommand, highlightsCommand, logCommand, reviewCommand } from "./commands/review"
 import { helpCommand, homeCommand, quitCommand, runShellCommand, themesCommand } from "./commands/system"
 import { runAgentTurn } from "./services/agent-turn"
-import { shortenPath, truncateEnd } from "./format"
+import { shortenPath, truncateEnd, truncateMiddle } from "./format"
 import { handleKeyPress } from "./keyboard"
 import type { KeyboardContext } from "./keyboard"
 import type { CommandDef, Suggestion } from "./commands/registry"
@@ -127,6 +133,12 @@ const HANDLERS: Record<string, CommandHandler> = {
 
 const ACTION_ITEMS = ["Back", "Next"]
 
+/** A failure or note shown over the current screen, never instead of it. */
+interface Alert {
+  kind: "error" | "notice"
+  text: string
+}
+
 export interface ReviewAppProps {
   /** Repository root to open on mount; the TUI starts at the home screen without one. */
   initialRoot?: string
@@ -153,6 +165,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const [branch, setBranch] = createSignal("no commits")
   const [transcript, setTranscript] = createSignal<Array<{ kind: EntryKind; text: string }>>([])
   const [status, setStatus] = createSignal("")
+  const [alert, setAlert] = createSignal<Alert | null>(null)
   const [cwd, setCwd] = createSignal(bootstrapRoot ?? "")
   const [connector, setConnector] = createSignal(getActive().connector)
   const [model, setModel] = createSignal<string | undefined>(getActive().model)
@@ -167,9 +180,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const [queue, setQueue] = createSignal<string[]>([])
   const [fileMemory, setFileMemory] = createSignal(new Map<string, "asked" | "passed">())
   const [menuOpen, setMenuOpen] = createSignal(false)
-  const [allFilesOpen, setAllFilesOpen] = createSignal(false)
   const [menuIndex, setMenuIndex] = createSignal(0)
-  const [allFilesIndex, setAllFilesIndex] = createSignal(0)
   const [reviewPickerOpen, setReviewPickerOpen] = createSignal(false)
   const [reviewPickerIndex, setReviewPickerIndex] = createSignal(0)
   const [projectsOpen, setProjectsOpen] = createSignal(false)
@@ -183,7 +194,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const [lastAnswer, setLastAnswer] = createSignal("")
   const [answerFile, setAnswerFile] = createSignal("")
   const [answerIsError, setAnswerIsError] = createSignal(false)
-  const [codeCursor, setCodeCursor] = createSignal(0)
   // Approvals live in review-state.json; the counter makes their reads reactive.
   const [approvalsVersion, setApprovalsVersion] = createSignal(0)
   let reviewState: ReviewState = emptyState()
@@ -195,11 +205,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const [resolvedHighlights, setResolvedHighlights] = createSignal(
     new Map<string, { startRow: number; endRow: number; moved: boolean } | null>(),
   )
-  const [highlightMenuOpen, setHighlightMenuOpen] = createSignal(false)
-  const [highlightMenuIndex, setHighlightMenuIndex] = createSignal(0)
-  const [highlightNoteMode, setHighlightNoteMode] = createSignal(false)
-  const [highlightNoteText, setHighlightNoteText] = createSignal("")
-  const [pendingHighlight, setPendingHighlight] = createSignal<Highlight | null>(null)
+  // The agent band's height in rows, changed by dragging its top edge.
+  const [agentHeight, setAgentHeight] = createSignal(5)
 
   const activeLabel = createMemo(() => {
     const active = connector()
@@ -233,14 +240,17 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   let logRef: ScrollBoxRenderable | undefined
   let treeRef: ScrollBoxRenderable | undefined
   let fileScrollRef: ScrollBoxRenderable | undefined
-  let allFilesScrollRef: ScrollBoxRenderable | undefined
-  let reviewPickerScrollRef: ScrollBoxRenderable | undefined
 
   const file = createMemo(() => {
     const list = files()
     if (!list || list.length === 0) return undefined
     return list[Math.min(selected(), list.length - 1)]
   })
+
+  /** The answer band is only tall when it has something to show. */
+  const answerShowing = createMemo(
+    () => busy() || (answerOpen() && answerFile() === (file()?.path ?? "")),
+  )
 
   const isFirstFile = createMemo(() => {
     const q = queue()
@@ -249,10 +259,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     return q.indexOf(cur) <= 0
   })
 
-  // Panels that replace the review: menu, all-files list, recent projects.
-  const mainVisible = createMemo(
-    () => !menuOpen() && !allFilesOpen() && !projectsOpen() && !reviewPickerOpen(),
-  )
+  // Panels float over the review; they never replace it.
 
   function connectorsStatus(): string {
     const lines = [
@@ -273,6 +280,35 @@ export function ReviewApp(props: ReviewAppProps = {}) {
 
   function addEntry(kind: EntryKind, text: string): void {
     setTranscript((entries) => [...entries, { kind, text }])
+  }
+
+  /** Report a failure where the user is, not on the transcript screen. */
+  function showError(text: string): void {
+    addEntry("error", text)
+    setAlert({ kind: "error", text })
+    setStatus("")
+  }
+
+  /** Report a passing note where the user is. */
+  function showNotice(text: string): void {
+    addEntry("system", text)
+    setAlert({ kind: "notice", text })
+    setStatus("")
+  }
+
+  // Notes are transient: a theme switch or a cleared highlight should not leave
+  // a panel in front of the review. Errors stay until the user dismisses them.
+  createEffect(() => {
+    const current = alert()
+    if (current?.kind !== "notice") return
+    const timer = setTimeout(() => {
+      if (alert() === current) setAlert(null)
+    }, 4000)
+    onCleanup(() => clearTimeout(timer))
+  })
+
+  function dismissAlert(): void {
+    setAlert(null)
   }
 
   function setPromptValue(value: string): void {
@@ -411,7 +447,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     setFileMemory(new Map())
     setAction(1)
     setMenuOpen(false)
-    setAllFilesOpen(false)
     setAnswerOpen(false)
     setAnswerFile("")
     setAnswerIsError(false)
@@ -497,8 +532,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       setTreeIndex(0)
       setView("tree")
     } catch (error) {
-      addEntry("error", `tree failed: ${error instanceof Error ? error.message : String(error)}`)
-      setView("log")
+      showError(`tree failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -579,7 +613,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     try {
       saveReviewState(cwd(), reviewState)
     } catch (error) {
-      setStatus(`could not save review state: ${error instanceof Error ? error.message : String(error)}`)
+      showError(`could not save review state: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -623,12 +657,21 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     return n
   }
 
-  /** The newest installed harness, or null when neither CLI is there. */
-  function chooseHarness(): HarnessAdapter | null {
+  /**
+   * The first harness that can be used now, and why none could when the
+   * answer is null. opencode counts as usable only with its server running.
+   */
+  async function chooseHarness(): Promise<{ harness: HarnessAdapter | null; reason: string }> {
     const opencode = createOpencodeHarness()
-    if (opencode.detect().available) return opencode
+    const found = await opencode.detect()
+    if (found.available) return { harness: opencode, reason: "" }
     const claude = createClaudeHarness()
-    return claude.detect().available ? claude : null
+    const claudeFound = await claude.detect()
+    if (claudeFound.available) return { harness: claude, reason: "" }
+    return {
+      harness: null,
+      reason: `${found.reason ?? "No harness found."} Claude Code was not found either.`,
+    }
   }
 
   function walkOnPlan(plan: PlanResponse): void {
@@ -669,7 +712,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
 
   function walkKeyFor(): string {
     const src = reviewSource()
-    const detail = src.kind === "commit" ? src.sha : src.kind === "branch" ? `${src.base}...${src.mergeBase}` : ""
+    const detail =
+      src.kind === "commit" ? src.sha : src.kind === "branch" ? `${src.base}...${src.mergeBase}` : ""
     return sourceKey(src.kind, detail)
   }
 
@@ -687,8 +731,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       callbacks: {
         status: (text) => setStatus(text),
         error: (message) => {
-          addEntry("error", message)
-          setStatus("")
+          showError(message)
         },
         plan: walkOnPlan,
         file: walkOnFile,
@@ -712,16 +755,15 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   async function startWalk(arg: string): Promise<void> {
     const list = files() ?? []
     if (list.length === 0) {
-      addEntry("system", "Nothing to walk through: no changed files in this review.")
-      setView("log")
+      showError("Nothing to walk through: no changed files in this review.")
       return
     }
-    const harness = chooseHarness()
-    if (harness === null) {
-      addEntry("error", "No harness found. Install opencode or Claude Code, then run /walk again.")
-      setView("log")
+    const choice = await chooseHarness()
+    if (choice.harness === null) {
+      showError(`${choice.reason} Then run /walk again.`)
       return
     }
+    const harness = choice.harness
     const baseSessionId = walkBaseSession(harness, arg)
     addEntry(
       "system",
@@ -776,50 +818,33 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     load()
   }
 
-  // Menu / all-files select options
+  // Menu options
   const menuOptions = createMemo<SelectOption[]>(() => [
-    { name: "Browse files", description: "every file in the project", value: 0 },
-    { name: "Chat history", description: "past questions and answers", value: 1 },
-    { name: "Recent projects", description: "switch to another project", value: 2 },
-    { name: "Refresh changes", description: "re-scan the working tree", value: 3 },
-    { name: "Change review source", description: "staged, branch, or a commit", value: 4 },
-    { name: "Review summary", description: "reviewed, asked, highlighted", value: 5 },
-    { name: "Next unreviewed file", description: "jump to the next one", value: 6 },
-    { name: "Help", description: "keys and commands", value: 7 },
-    { name: "Quit", description: "exit chert", value: 8 },
+    { name: "Walk through with agent", description: "fork the author's session", value: 0 },
+    { name: "Browse files", description: "every file in the project", value: 1 },
+    { name: "Chat history", description: "past questions and answers", value: 2 },
+    { name: "Recent projects", description: "switch to another project", value: 3 },
+    { name: "Refresh changes", description: "re-scan the working tree", value: 4 },
+    { name: "Change review source", description: "staged, branch, or a commit", value: 5 },
+    { name: "Review summary", description: "reviewed, asked, highlighted", value: 6 },
+    { name: "Next unreviewed file", description: "jump to the next one", value: 7 },
+    { name: "Help", description: "keys and commands", value: 8 },
+    { name: "Quit", description: "exit chert", value: 9 },
   ])
 
-  const allFilesOptions = createMemo<SelectOption[]>(() => {
-    const mem = fileMemory()
-    return (files() ?? []).map((f, idx) => {
-      const m = mem.get(f.path)
-      const marker = m === "asked" ? "✓" : m === "passed" ? "-" : " "
-      return {
-        name: `${marker} ${f.path}`,
-        description:
-          f.status === "added" || f.status === "untracked"
-            ? "new"
-            : f.status === "deleted"
-              ? "deleted"
-              : "changed",
-        value: idx,
-      }
-    })
-  })
-
   function listProjects(): void {
-    const recents = loadRecent()
-    if (recents.length === 0) {
-      addEntry("system", "No saved projects yet. Type /cd and a folder path.")
-      setView("log")
+    if (loadRecent().length === 0) {
+      showNotice("No saved projects yet. Type /cd and a folder path.")
       return
     }
-    const lines = recents.map((r) => {
-      const name = basename(r.path)
-      return `${name.padEnd(20)}  ${displayPath(r.path)}`
-    })
-    addEntry("system", lines.join("\n"))
-    setView("log")
+    // With no project open the home screen already lists them; selecting is the
+    // same keys. With a project open, the list drops up over the review.
+    setProjectsIndex(0)
+    if (!hasProject()) {
+      setStatus("Pick a project below, or /cd <path>")
+      return
+    }
+    setProjectsOpen(true)
   }
 
   const cdMatches = createMemo(() => {
@@ -836,22 +861,10 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   })
 
   function submit(): void {
-    if (highlightNoteMode()) {
-      const hl = pendingHighlight()
-      if (hl) {
-        const finalHl = { ...hl, note: (inputRef?.value ?? "").trim() }
-        if (persistHighlights([...highlights(), finalHl])) {
-          setStatus(`highlighted lines ${hl.start}-${hl.end}`)
-        }
-      }
-      setHighlightNoteMode(false)
-      setPendingHighlight(null)
-      clearInput()
-      return
-    }
     const raw = (inputRef?.value ?? "").trim()
     if (raw === "") return
     clearInput()
+    setAlert(null)
     if (raw.startsWith("/")) {
       runCommand(raw.slice(1).trim())
       return
@@ -878,11 +891,11 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       const result = saveHighlights(cwd(), next)
       if (result.overCap && !capWarningShown) {
         capWarningShown = true
-        setStatus(`over ${MAX_SAVED_HIGHLIGHTS} highlights: yours are all kept, new AI ones will not be`)
+        showNotice(`over ${MAX_SAVED_HIGHLIGHTS} highlights: yours are all kept, new AI ones will not be`)
       }
       return true
     } catch (error) {
-      setStatus(`could not save highlights: ${error instanceof Error ? error.message : String(error)}`)
+      showError(`could not save highlights: ${error instanceof Error ? error.message : String(error)}`)
       return false
     }
   }
@@ -948,6 +961,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     walk = null
     setWalkSession(null)
     setWalkIntent("")
+    setProjectsOpen(false)
     const saved = loadSavedReviewSource(root)
     if (saved) setReviewSource(saved)
     setCwd(root)
@@ -963,6 +977,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       args,
       addEntry,
       setStatus,
+      showError,
+      showNotice,
       setView,
       setPromptValue,
       openMenu: () => setMenuOpen(true),
@@ -1015,6 +1031,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   }
 
   function runCommand(line: string): void {
+    setAlert(null)
     if (line === "") {
       addEntry("system", HELP_TEXT)
       setView("log")
@@ -1037,12 +1054,10 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         if (close && isCloseAutocorrect(name, close)) {
           def = close
         } else if (close) {
-          addEntry("error", `unknown command /${name} — did you mean /${close.name}?`)
-          setView("log")
+          showError(`unknown command /${name} — did you mean /${close.name}?`)
           return
         } else {
-          addEntry("error", `unknown command /${name} — try /help`)
-          setView("log")
+          showError(`unknown command /${name} — try /help`)
           return
         }
       }
@@ -1054,8 +1069,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       handler(buildCommandContext(rest))
       return
     }
-    addEntry("error", `unknown command /${name} — try /help`)
-    setView("log")
+    showError(`unknown command /${name} — try /help`)
   }
 
   /** The surface the keyboard handler may use. */
@@ -1073,8 +1087,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       reviewPickerIndex,
       setReviewPickerIndex,
       allReviewTargets,
-      scrollReviewPicker: (y) =>
-        bestEffort("scroll review picker", () => reviewPickerScrollRef?.scrollTo({ x: 0, y })),
 
       pickerOpen,
       setPickerOpen,
@@ -1090,23 +1102,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       cdMatches,
       runCommand,
 
-      highlightMenuOpen,
-      setHighlightMenuOpen,
-      highlightMenuIndex,
-      setHighlightMenuIndex,
-      highlightNoteMode,
-      setHighlightNoteMode,
-      setHighlightNoteText,
-      setPendingHighlight,
-      highlightForRowIndex,
-      highlights,
-      setResolvedHighlights,
-      resolvedHighlights,
-      persistHighlights,
-      markAsked,
-      askAgent: (prompt) => {
-        void askAgent(prompt)
-      },
+      scrollAnswer,
 
       menuOpen,
       setMenuOpen,
@@ -1118,12 +1114,10 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       setProjectsOpen,
       projectsIndex,
       setProjectsIndex,
-      allFilesOpen,
-      setAllFilesOpen,
-      allFilesIndex,
-      setAllFilesIndex,
       view,
       setStatus,
+      alertOpen: () => alert() !== null,
+      dismissAlert,
       hasProject,
       openRecent,
       loadRecent,
@@ -1133,7 +1127,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       activateAction,
       navigate,
       codeRows,
-      codeCursorRow,
       file,
       files: () => files() ?? [],
       selectFile,
@@ -1143,7 +1136,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         return f !== undefined && isFileApproved(f.path)
       },
       toggleApproval,
-      scrollAllFiles: (y) => bestEffort("scroll all files", () => allFilesScrollRef?.scrollTo({ x: 0, y })),
 
       moveTreeIndex,
       openTreeSelection,
@@ -1158,47 +1150,48 @@ export function ReviewApp(props: ReviewAppProps = {}) {
 
   function handleMenuSelection(i: number): void {
     switch (i) {
-      case 0: // Project tree
+      case 0: // Walk through with agent
+        setMenuOpen(false)
+        void startWalk("")
+        return
+      case 1: // Browse files
         setMenuOpen(false)
         if (hasProject()) loadTree()
         else setView("tree")
         return
-      case 1: // Chat history
+      case 2: // Chat history
         setMenuOpen(false)
         setView("log")
         return
-      case 2: // Switch project
+      case 3: // Recent projects
         setMenuOpen(false)
         setProjectsOpen(true)
         setProjectsIndex(0)
         return
-      case 3: // Refresh changes
+      case 4: // Refresh changes
         setMenuOpen(false)
         if (hasProject()) {
           load()
           setStatus(`refreshed ${files()?.length ?? 0} files`)
         }
         return
-      case 4: // Review something else
+      case 5: // Change review source
         setMenuOpen(false)
-        addEntry(
-          "system",
-          "Type /review working · /review staged · /review branch [name] · /review last · /review commit <ref>",
-        )
-        setView("log")
+        setReviewPickerOpen(true)
+        setReviewPickerIndex(0)
         return
-      case 5: // Review summary
+      case 6: // Review summary
         setMenuOpen(false)
-        const asked = (files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length
-        const hlYours = highlights().filter((h) => h.by === "you").length
-        const hlAi = highlights().filter((h) => h.by === "ai").length
-        addEntry(
-          "system",
-          `Reviewed ${reviewedCount()} of ${files()?.length ?? 0} files. Asked about ${asked}. Highlights: ${hlYours} yours, ${hlAi} from the AI.`,
-        )
-        setView("log")
+        {
+          const asked = (files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length
+          const hlYours = highlights().filter((h) => h.by === "you").length
+          const hlAi = highlights().filter((h) => h.by === "ai").length
+          showNotice(
+            `Reviewed ${reviewedCount()} of ${files()?.length ?? 0} files. Asked about ${asked}. Highlights: ${hlYours} yours, ${hlAi} from the AI.`,
+          )
+        }
         return
-      case 6: // Next unreviewed file
+      case 7: // Next unreviewed file
         setMenuOpen(false)
         {
           const unrev = (files() ?? []).find((f) => !isFileApproved(f.path))
@@ -1207,12 +1200,12 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           }
         }
         return
-      case 7: // Help
+      case 8: // Help
         addEntry("system", HELP_TEXT)
         setView("log")
         setMenuOpen(false)
         return
-      case 8: // Quit
+      case 9: // Quit
         renderer.destroy()
         process.exit(0)
         return
@@ -1224,7 +1217,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     if (!item) return
     const root = openProject(item.path)
     if (root === undefined) {
-      setStatus(`can't open ${displayPath(item.path)}`)
+      showError(`can't open ${displayPath(item.path)}`)
       return
     }
     const savedCwd = hasProject() ? cwd() : null
@@ -1301,16 +1294,34 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   function footerHints(): string {
     const hasText = (inputRef?.value ?? "") !== ""
     if (hasText) return "Enter send · Esc clear · Ctrl+C quit"
+    if (alert() !== null) return "Esc dismiss · Ctrl+C quit"
+    if (menuOpen()) return "↑↓ choose · Enter go · Esc close · Ctrl+C quit"
+    if (reviewPickerOpen()) return "↑↓ choose · Enter review · Esc close · Ctrl+C quit"
+    if (projectsOpen()) return "↑↓ choose · Enter open · Esc close · Ctrl+C quit"
     if (view() === "tree") return "↑↓ move · Enter open · Esc menu · Ctrl+C quit"
     if (view() === "log") return "Esc menu · Ctrl+C quit"
     if (view() === "done") return "↑↓ choose · Enter go · Ctrl+C quit"
-    if (menuOpen()) return "↑↓ choose · Enter go · Esc close · Ctrl+C quit"
-    if (allFilesOpen()) return "↑↓ choose · Enter jump · Esc close · Ctrl+C quit"
     if (!hasProject()) return "↑↓ choose · Enter open · /cd <path> · Esc menu · Ctrl+C quit"
     if (answerOpen() && answerFile() === (file()?.path ?? ""))
-      return "↑↓ file  ←→ action  Enter  PgUp/PgDn answer  Esc menu  Ctrl+C quit"
-    return "↑↓ file  ←→ action  Enter  Space approve  drag note  Esc menu  Ctrl+C quit"
+      return "↑↓ file · PgUp/PgDn answer · Esc menu · Ctrl+C quit"
+    return "↑↓ file · Space approve · Esc menu · Ctrl+C quit"
   }
+
+  const showActionBar = createMemo(
+    () =>
+      hasProject() &&
+      view() === "review" &&
+      !menuOpen() &&
+      !projectsOpen() &&
+      !reviewPickerOpen(),
+  )
+
+  /** Width the hints may use before the status and the action buttons. */
+  const footerHintsBudget = createMemo(() => {
+    const actions = showActionBar() ? ACTION_ITEMS.reduce((n, label) => n + label.length + 2, 0) : 0
+    const statusWidth = !busy() && status() !== "" ? Math.min(status().length + 3, 41) : 0
+    return Math.max(16, dims().width - 2 - actions - statusWidth)
+  })
 
   // Keep the log pinned to the bottom as entries arrive.
   createEffect(() => {
@@ -1340,19 +1351,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     setResolvedHighlights(merged)
   })
 
-  // Reset diff scroll to top whenever the displayed patch changes.
-  createEffect(() => {
-    patch()
-    bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
-  })
-
   const codeRows = createMemo<Row[]>(() => parsePatch(patch()))
-
-  const codeCursorRow = createMemo(() => {
-    const rows = codeRows()
-    if (rows.length === 0) return 0
-    return Math.max(0, Math.min(codeCursor(), rows.length - 1))
-  })
 
   function highlightColor(h: Highlight): string {
     if (h.by === "you") return COLORS().accent
@@ -1371,20 +1370,51 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     return undefined
   }
 
-  const noteStrip = createMemo(() => {
-    const rows = codeRows()
-    const idx = codeCursorRow()
-    const h = highlightForRowIndex(idx)
-    if (!h) return ""
-    const who = h.by === "you" ? "you" : `AI ${h.level}`
-    const note = h.note.trim() === "" ? "(no note)" : h.note
-    return `${who} \u00b7 ${note}`
-  })
+  /** Put text on the clipboard; false when the terminal refused it. */
+  function copyToClipboard(text: string): boolean {
+    const osc52 = `\u001b]52;c;${Buffer.from(text).toString("base64")}\u0007`
+    try {
+      if (renderer.copyToClipboardOSC52(text)) return true
+    } catch {
+      // fall through to the raw sequence
+    }
+    // A real terminal takes the sequence even when capability detection is
+    // unsure; a piped stdout (tests) never does.
+    if (!process.stdout.isTTY) return false
+    try {
+      process.stdout.write(osc52)
+      return true
+    } catch {
+      return false
+    }
+  }
 
-  // The highlight tool is the mouse: a drag over the diff marks the rows under
-  // the pointer and asks for the note. Arrow keys stay on the file list.
+  /** Copy a highlight in the form an agent can read back: path, lines, text. */
+  function copyHighlight(h: Highlight): void {
+    const where = h.start === h.end ? `line ${h.start}` : `lines ${h.start}-${h.end}`
+    const text = [`${h.path} ${where}`, ...h.text.map((line) => `  ${line}`)].join("\n")
+    setStatus(
+      copyToClipboard(text)
+        ? "Copied to your clipboard — paste it for your agent"
+        : "Could not copy — highlight saved",
+    )
+  }
+
+  /** PageUp/PageDown in the agent band. */
+  function scrollAnswer(direction: -1 | 1): void {
+    const box = answerScrollRef
+    if (!box) return
+    const page = Math.max(1, box.height - 2)
+    bestEffort("scroll the answer", () =>
+      box.scrollTo({ x: 0, y: Math.max(0, box.scrollTop + direction * page) }),
+    )
+  }
+
+  // The highlight tool is the mouse: a drag over the diff copies the rows under
+  // the pointer, so the user can paste them into the prompt for the agent.
+  // Arrow keys stay on the file list.
   useSelectionHandler((selection) => {
-    if (view() !== "review" || !hasProject() || menuOpen() || allFilesOpen() || projectsOpen()) return
+    if (view() !== "review" || !hasProject() || menuOpen() || projectsOpen()) return
     const box = codeScrollRef
     if (!box) return
     const rows = codeRows()
@@ -1396,27 +1426,51 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       focus: selection.focus,
     })
     if (!range) return
-    setCodeCursor(range.end)
-    const existing = range.start === range.end ? highlightForRowIndex(range.start) : undefined
-    if (existing) {
-      setHighlightMenuOpen(true)
-      setHighlightMenuIndex(0)
-      return
-    }
     const built = highlightFromRows(rows, range.start, range.end, file()?.path ?? "")
     if (!built.ok) {
       setStatus(built.reason)
       return
     }
-    setHighlightNoteMode(true)
-    setHighlightNoteText("")
-    setPendingHighlight(built.highlight)
-    setStatus("note for these lines (Enter saves, Enter with nothing saves without a note, Esc cancels)")
-    // The click took the focus off the prompt; the note is typed there.
-    bestEffort("focus the note prompt", () => inputRef?.focus())
+    // Dragging the same lines again copies them again without piling up
+    // duplicate highlights.
+    const saved = highlights().find(
+      (h) =>
+        h.path === built.highlight.path &&
+        h.side === built.highlight.side &&
+        h.start === built.highlight.start &&
+        h.end === built.highlight.end,
+    )
+    if (saved === undefined) persistHighlights([...highlights(), built.highlight])
+    copyHighlight(saved ?? built.highlight)
+    // The click took the focus off the prompt; bring it back for the paste.
+    bestEffort("focus the prompt", () => inputRef?.focus())
   })
 
+  // Dragging the band's top edge changes how much of the answer is visible.
+  let bandDrag: { startY: number; startHeight: number } | null = null
+
+  function beginBandResize(event: { y: number }): void {
+    bandDrag = { startY: event.y, startHeight: agentHeight() }
+  }
+
+  function resizeBand(event: { y: number }): void {
+    if (bandDrag === null) return
+    const requested = bandDrag.startHeight + (bandDrag.startY - event.y)
+    const max = Math.max(3, Math.floor(dims().height * 0.6))
+    setAgentHeight(Math.max(3, Math.min(requested, max)))
+  }
+
   const reviewedCount = createMemo(approvedCount)
+
+  const overlayRows = createMemo(() => Math.max(3, Math.min(10, dims().height - 14)))
+
+  /** Three lines at most; the transcript keeps the full message. */
+  const alertText = createMemo(() =>
+    truncateMiddle(
+      (alert()?.text ?? "").replace(/\s*\n\s*/g, " · "),
+      Math.max(40, (dims().width - 6) * 3),
+    ),
+  )
 
   const suggestionWindow = createMemo(() => {
     const list = visibleSuggestions()
@@ -1464,11 +1518,10 @@ export function ReviewApp(props: ReviewAppProps = {}) {
               <Show
                 when={view() === "tree"}
                 fallback={
-                  <Show when={mainVisible()}>
-                    <Show
-                      when={hasProject()}
-                      fallback={<HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} />}
-                    >
+                  <Show
+                    when={hasProject()}
+                    fallback={<HomeScreen recents={() => loadRecent()} index={() => projectsIndex()} />}
+                  >
                       <box flexGrow={1} flexDirection="row">
                         <box
                           width="32%"
@@ -1551,9 +1604,15 @@ export function ReviewApp(props: ReviewAppProps = {}) {
                           </box>
                           <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
                           <Show when={(files()?.length ?? 0) === 0}>
-                            <box height={1} flexShrink={0} paddingTop={1} paddingLeft={1}>
-                              <text fg={COLORS().dim}>
-                                {"Nothing to review — the working tree is clean."}
+                            <box flexShrink={0} flexDirection="column" paddingTop={1} paddingLeft={1}>
+                              <text
+                                wrapMode="word"
+                                fg={loadError() !== null ? COLORS().danger : COLORS().dim}
+                              >
+                                {loadError() ?? "Nothing to review — the working tree is clean."}
+                              </text>
+                              <text fg={COLORS().dim} attributes={ATTR.dim}>
+                                {"Change a file, or /review branch to review a branch."}
                               </text>
                             </box>
                           </Show>
@@ -1605,7 +1664,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
                           </scrollbox>
                         </box>
                       </box>
-                    </Show>
                   </Show>
                 }
               >
@@ -1688,40 +1746,89 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         </box>
       </Show>
 
-      {/* The agent's band: a fixed five lines so the layout never jumps. */}
+      {/* The agent's band: its top edge is a drag handle that sets the height.
+          With no answer it collapses to the label, leaving the diff the room. */}
       <Show when={hasProject() && view() === "review"}>
-        <box
-          height={5}
-          border={["top"]}
-          borderColor={COLORS().rule}
-          flexDirection="column"
-          paddingLeft={1}
-        >
-          <text
-            fg={COLORS().dim}
-          >
-            {answerOpen() && answerFile() === (file()?.path ?? "")
-              ? `You asked: ${truncateEnd(lastQuestion(), 50)}  \u00b7  ${activeLabel()}`
-              : "The agent's notes will appear here."}
-          </text>
-          <scrollbox
-            ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
-            flexGrow={1}
-            backgroundColor={COLORS().bg}
+        <box height={answerShowing() ? agentHeight() : 2} flexShrink={0} flexDirection="column" paddingLeft={1}>
+          {/* A drawn rule rather than a border: borders are not hit-tested, and
+              this row has to receive the press that starts a resize. */}
+          <box
+            height={1}
+            flexShrink={0}
+            ref={(el: BoxRenderable) => {
+              el.onMouseDown = (event) => beginBandResize(event)
+              el.onMouseDrag = (event) => resizeBand(event)
+              el.onMouseUp = () => {
+                bandDrag = null
+              }
+            }}
           >
             <text
-              wrapMode="word"
-              fg={busy() ? COLORS().dim : answerIsError() ? COLORS().danger : COLORS().text}
+              fg={COLORS().rule}
+              wrapMode="none"
+              ref={(el: TextRenderable) => {
+                // A selectable row would start a text selection instead of
+                // handing the drag to the band.
+                el.selectable = false
+              }}
             >
-              {busy()
-                ? status()
-                : answerOpen() && answerFile() === (file()?.path ?? "")
-                  ? lastAnswer()
-                  : ""}
+              {"─".repeat(Math.max(0, dims().width - 2))}
             </text>
-          </scrollbox>
+          </box>
+          <text fg={COLORS().dim}>
+            {answerOpen() && answerFile() === (file()?.path ?? "")
+              ? `You asked: ${truncateEnd(lastQuestion(), 50)}  \u00b7  ${activeLabel()}`
+              : walkSession() !== null
+                ? "Ask about this file — the agent has the author's context."
+                : "Ask about this file."}
+          </text>
+          <Show when={answerShowing()}>
+            <scrollbox
+              ref={(el: ScrollBoxRenderable) => (answerScrollRef = el)}
+              flexGrow={1}
+              backgroundColor={COLORS().bg}
+            >
+              <text
+                wrapMode="word"
+                fg={busy() ? COLORS().dim : answerIsError() ? COLORS().danger : COLORS().text}
+              >
+                {busy() ? status() : lastAnswer()}
+              </text>
+            </scrollbox>
+          </Show>
         </box>
       </Show>
+      {/* Failures and notes sit in the flow above the prompt, so they never
+          cover what you are typing. */}
+      <Show when={alert() !== null}>
+        <box
+          flexShrink={0}
+          marginLeft={1}
+          marginRight={1}
+          flexDirection="row"
+          backgroundColor={COLORS().panel}
+          border
+          borderColor={alert()!.kind === "error" ? COLORS().danger : COLORS().purpleDim}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <text
+            fg={alert()!.kind === "error" ? COLORS().danger : COLORS().purpleBright}
+            attributes={ATTR.bold}
+          >
+            {alert()!.kind === "error" ? "✗ " : "· "}
+          </text>
+          <text
+            wrapMode="word"
+            flexGrow={1}
+            fg={alert()!.kind === "error" ? COLORS().danger : COLORS().text}
+          >
+            {alertText()}
+          </text>
+        </box>
+      </Show>
+      {/* A rule above the prompt separates the agent's words from yours. */}
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={COLORS().purple} attributes={ATTR.bold}>
           {"> "}
@@ -1794,31 +1901,18 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           </For>
         </box>
       </Show>
+      {/* One line of hints, with the action buttons on its right. */}
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <Show
-          when={busy()}
-          fallback={
-            <>
-              <text fg={COLORS().dim} attributes={ATTR.dim}>
-                {truncateEnd(
-                  footerHints(),
-                  Math.max(16, dims().width - 2 - (status() === "" ? 0 : status().length + 3)),
-                )}
-              </text>
-              <box flexGrow={1} />
-              <Show when={status() !== ""}>
-                <text fg={COLORS().purpleBright} attributes={ATTR.dim}>
-                  {`· ${status()}`}
-                </text>
-              </Show>
-            </>
-          }
-        >
-          <text fg={COLORS().purple} attributes={ATTR.dim}>{`${status()} · Ctrl+C quit`}</text>
+        <text fg={COLORS().dim} attributes={ATTR.dim}>
+          {truncateEnd(footerHints(), footerHintsBudget())}
+        </text>
+        <box flexGrow={1} />
+        <Show when={!busy() && status() !== ""}>
+          <text fg={COLORS().purpleBright} attributes={ATTR.dim}>
+            {`· ${truncateEnd(status(), 40)} `}
+          </text>
         </Show>
-      </box>
-      <Show when={hasProject() && view() === "review" && !menuOpen() && !allFilesOpen() && !projectsOpen()}>
-        <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+        <Show when={showActionBar()}>
           <For each={ACTION_ITEMS}>
             {(label, i) => (
               <text
@@ -1828,35 +1922,21 @@ export function ReviewApp(props: ReviewAppProps = {}) {
               >{` ${label} `}</text>
             )}
           </For>
-          <box flexGrow={1} />
-        </box>
-      </Show>
-      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
+        </Show>
+      </box>
 
       <Overlays
         menuOpen={menuOpen}
         menuIndex={menuIndex}
         menuOptions={menuOptions}
-        allFilesOpen={allFilesOpen}
-        allFilesIndex={allFilesIndex}
-        allFilesOptions={allFilesOptions}
-        fileCount={() => files()?.length ?? 0}
-        onAllFilesScroll={(el: ScrollBoxRenderable) => {
-          allFilesScrollRef = el
-        }}
         reviewPickerOpen={reviewPickerOpen}
         reviewPickerIndex={reviewPickerIndex}
         allReviewTargets={allReviewTargets}
-        onReviewPickerScroll={(el: ScrollBoxRenderable) => {
-          reviewPickerScrollRef = el
-        }}
-        highlightMenuOpen={highlightMenuOpen}
-        highlightMenuIndex={highlightMenuIndex}
-        highlightForRowIndex={highlightForRowIndex}
-        codeCursorRow={codeCursorRow}
         projectsOpen={projectsOpen}
         projectsIndex={projectsIndex}
+        hasProject={hasProject}
         loadRecent={loadRecent}
+        maxRows={overlayRows()}
       />
 
       <Show when={cdMatches() !== null}>
@@ -1865,13 +1945,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
             {cdMatches()!.length === 0
               ? "no saved project matches, press Enter to try it as a folder"
               : `matches: ${cdMatches()!.join(" · ")}`}
-          </text>
-        </box>
-      </Show>
-      <Show when={noteStrip() !== ""}>
-        <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1}>
-          <text fg={COLORS().purpleBright} attributes={ATTR.dim}>
-            {noteStrip()}
           </text>
         </box>
       </Show>

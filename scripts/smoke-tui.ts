@@ -32,8 +32,9 @@ function assert(condition: boolean, message: string): void {
  * does: one JSON event per line, text inside `part.text`, joined with newlines.
  */
 function fakeOpencodeScript(parts: string[]): string {
-  const events = parts.map((text) =>
-    `  echo '${JSON.stringify({ type: "text", sessionID: "ses_fake", part: { type: "text", text } })}'`,
+  const events = parts.map(
+    (text) =>
+      `  echo '${JSON.stringify({ type: "text", sessionID: "ses_fake", part: { type: "text", text } })}'`,
   )
   return [
     "#!/bin/sh",
@@ -46,6 +47,24 @@ function fakeOpencodeScript(parts: string[]): string {
     "exit 0",
     "",
   ].join("\n")
+}
+
+/**
+ * A stand-in for `opencode serve`. chert only asks it for `/global/health`, and
+ * points every other call at the fake CLI on PATH.
+ */
+function startFakeOpencodeServer(): { url: string; stop: () => void } {
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      if (new URL(request.url).pathname === "/global/health") {
+        return Response.json({ healthy: true, version: "2.3.0" })
+      }
+      return new Response("not found", { status: 404 })
+    },
+  })
+  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) }
 }
 
 async function phase1Tests(): Promise<void> {
@@ -221,7 +240,8 @@ async function phase3Tests(): Promise<void> {
       frame = setup.captureCharFrame()
       // after Esc with empty-ish, menu should open if input empty
       // (input was cleared by submit; Esc on empty opens menu)
-      assert(frame.includes("Menu") || frame.includes("All files"), "phase3 Esc opens Menu")
+      assert(frame.includes("Menu"), "phase3 Esc opens Menu")
+      assert(frame.includes("Files ("), "phase3 menu floats over the review, not a new page")
 
       // close menu
       await setup.mockInput.pressEscape()
@@ -450,6 +470,13 @@ async function phaseBTests(): Promise<void> {
       await setup.renderOnce()
       frame = setup.captureCharFrame()
       assert(frame.includes("No project or folder called"), "phaseB bogus name error")
+      assert(frame.includes("Files ("), "phaseB error stays on the review screen")
+      await setup.mockInput.pressEscape()
+      // A lone Esc is flushed by the input parser on its timer, not instantly.
+      await new Promise((r) => setTimeout(r, 60))
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(!frame.includes("No project or folder called"), "phaseB Esc dismisses the error")
 
       // /forget
       await setup.mockInput.pressKeys("/forget alpha".split(""))
@@ -457,6 +484,37 @@ async function phaseBTests(): Promise<void> {
       await setup.renderOnce()
       frame = setup.captureCharFrame()
       assert(frame.includes("removed from your list"), "phaseB /forget works")
+
+      // /review opens the source picker as a drop-up over the review.
+      await setup.mockInput.pressKeys("/review".split(""))
+      await setup.mockInput.pressKey("RETURN")
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(frame.includes("Review source"), "phaseB /review opens the picker")
+      assert(frame.includes("Files ("), "phaseB picker floats over the review")
+      await setup.mockInput.pressEscape()
+      await new Promise((r) => setTimeout(r, 60))
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(!frame.includes("Review source"), "phaseB Esc closes the review picker")
+
+      // The menu's Recent projects row opens the same drop-up over the review.
+      await setup.mockInput.pressEscape()
+      await new Promise((r) => setTimeout(r, 60))
+      await setup.renderOnce()
+      await setup.mockInput.pressArrow("down")
+      await setup.mockInput.pressArrow("down")
+      await setup.mockInput.pressArrow("down")
+      await setup.mockInput.pressKey("RETURN")
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(frame.includes("Recent projects"), "phaseB Recent projects opens a drop-up")
+      assert(frame.includes("Files ("), "phaseB projects float over the review")
+      await setup.mockInput.pressEscape()
+      await new Promise((r) => setTimeout(r, 60))
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(!frame.includes("Recent projects"), "phaseB Esc closes the projects drop-up")
     } finally {
       await setup.dispose().catch(() => {})
     }
@@ -575,23 +633,21 @@ async function phaseETests(): Promise<void> {
       const firstLine = lines.findIndex((line) => line.includes("export const a = 1"))
       const secondLine = lines.findIndex((line) => line.includes("export const b = 2"))
       assert(firstLine !== -1 && secondLine === firstLine + 1, "phaseE finds the two added lines")
-      // The highlight tool is the mouse: drag down over both lines.
+      // The highlight tool is the mouse: drag down over both lines copies them
+      // for the prompt, with a toast and no note step.
       await setup.mockMouse.drag(45, firstLine, 45, secondLine)
       await setup.renderOnce()
-      // the drag opens the note prompt; type a note and save it
-      await setup.mockInput.pressKeys("my note".split(""))
-      await setup.renderOnce()
-      await setup.mockInput.pressKey("RETURN")
-      await new Promise((r) => setTimeout(r, 60))
-      await setup.renderOnce()
       frame = setup.captureCharFrame()
-      assert(frame.includes("\u258C") || frame.includes("my note"), "phaseE highlight gutter or note shows")
+      // The fake terminal has no clipboard, so the toast reports one of the two
+      // outcomes; either way the drag copied the lines it covered.
+      assert(frame.includes("Copied") || frame.includes("highlight saved"), "phaseE drag reports the copy")
+      assert(frame.includes("\u258C"), "phaseE highlight gutter shows")
       // /highlights lists it
       await setup.mockInput.pressKeys("/highlights".split(""))
       await setup.mockInput.pressKey("RETURN")
       await setup.renderOnce()
       frame = setup.captureCharFrame()
-      assert(frame.includes("my note"), "phaseE /highlights lists note")
+      assert(frame.includes("src/a.ts:1-2"), "phaseE /highlights lists the copied lines")
     } finally {
       await setup.dispose().catch(() => {})
     }
@@ -616,6 +672,8 @@ async function phaseFTests(): Promise<void> {
   const orig = process.cwd()
   const prevCfg = process.env.CHERT_CONFIG_DIR
   const prevPath = process.env.PATH
+  const prevServer = process.env.CHERT_OPENCODE_SERVER
+  const server = startFakeOpencodeServer()
   try {
     const script = join(binDir, "opencode")
     writeFileSync(script, fakeOpencodeScript(["answer line 1"]))
@@ -623,6 +681,7 @@ async function phaseFTests(): Promise<void> {
     chmodSync(script, 0o755)
     process.env.PATH = binDir + ":" + (process.env.PATH ?? "")
     process.env.CHERT_CONFIG_DIR = cfg
+    process.env.CHERT_OPENCODE_SERVER = server.url
 
     runGit(repo, ["init", "-b", "main"])
     runGit(repo, ["config", "user.email", "smoke@example.com"])
@@ -652,6 +711,19 @@ async function phaseFTests(): Promise<void> {
       let frame = setup.captureCharFrame()
       assert(frame.includes("answer line 1"), "phaseF answer shows in pane")
 
+      // Dragging the band's top edge makes it taller by the drag distance: the
+      // band grows upward, so its header moves up two rows.
+      {
+        const headerRow = () =>
+          setup.captureCharFrame().split("\n").findIndex((line) => line.includes("You asked:"))
+        const before = headerRow()
+        const gripY = before - 1
+        await setup.mockMouse.drag(40, gripY, 40, gripY - 2)
+        await setup.renderOnce()
+        const after = headerRow()
+        assert(after === before - 2, `dragging the band resizes the answer pane (${before} -> ${after})`)
+      }
+
       // Space approves the only file; there is nothing left, so the review ends.
       await setup.mockInput.pressKey(" ")
       await setup.renderOnce()
@@ -666,10 +738,13 @@ async function phaseFTests(): Promise<void> {
     }
   } finally {
     process.chdir(orig)
+    server.stop()
     if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR
     else process.env.CHERT_CONFIG_DIR = prevCfg
     if (prevPath === undefined) delete process.env.PATH
     else process.env.PATH = prevPath
+    if (prevServer === undefined) delete process.env.CHERT_OPENCODE_SERVER
+    else process.env.CHERT_OPENCODE_SERVER = prevServer
     rmSync(repo, { recursive: true, force: true })
     rmSync(cfg, { recursive: true, force: true })
     rmSync(binDir, { recursive: true, force: true })
@@ -686,6 +761,11 @@ if (args[0] === "--version") {
 if (args[0] === "session") {
   console.log(JSON.stringify([{ id: "ses_author", title: "wrote a2", updated: 2000 }]))
   process.exit(0)
+}
+// chert must use the configured server, not start a private backend.
+if (!args.includes("--server")) {
+  console.error("chert called opencode without --server")
+  process.exit(1)
 }
 const prompt = args[args.length - 1]
 const sessionAt = args.indexOf("--session")
@@ -729,6 +809,8 @@ async function phaseWalkTests(): Promise<void> {
   const orig = process.cwd()
   const prevCfg = process.env.CHERT_CONFIG_DIR
   const prevPath = process.env.PATH
+  const prevServer = process.env.CHERT_OPENCODE_SERVER
+  const server = startFakeOpencodeServer()
   try {
     const script = join(binDir, "opencode")
     writeFileSync(script, WALK_FAKE)
@@ -736,6 +818,7 @@ async function phaseWalkTests(): Promise<void> {
     chmodSync(script, 0o755)
     process.env.PATH = binDir + ":" + (process.env.PATH ?? "")
     process.env.CHERT_CONFIG_DIR = cfg
+    process.env.CHERT_OPENCODE_SERVER = server.url
 
     runGit(repo, ["init", "-b", "main"])
     runGit(repo, ["config", "user.email", "smoke@example.com"])
@@ -786,10 +869,13 @@ async function phaseWalkTests(): Promise<void> {
     }
   } finally {
     process.chdir(orig)
+    server.stop()
     if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR
     else process.env.CHERT_CONFIG_DIR = prevCfg
     if (prevPath === undefined) delete process.env.PATH
     else process.env.PATH = prevPath
+    if (prevServer === undefined) delete process.env.CHERT_OPENCODE_SERVER
+    else process.env.CHERT_OPENCODE_SERVER = prevServer
     rmSync(repo, { recursive: true, force: true })
     rmSync(cfg, { recursive: true, force: true })
     rmSync(binDir, { recursive: true, force: true })
@@ -849,6 +935,26 @@ async function main(): Promise<void> {
     assert(frame.includes("oldThing"), "initial diff shows the deleted file patch")
     assert(frame.includes("> "), "prompt row is present")
 
+    // With no answer yet, the band collapses to its label: the prompt sits two
+    // rows below it (a rule and the prompt itself), not five.
+    {
+      const lines = setup.captureCharFrame().split("\n")
+      const header = lines.findIndex((line) => line.includes("Ask about this file"))
+      const prompt = lines.findIndex((line) => line.includes("> ask a question"))
+      assert(header > 0 && prompt === header + 2, `empty answer band is compact (${header} -> ${prompt})`)
+    }
+
+    // /theme switches immediately and reports on the status line, not in a banner.
+    await setup.mockInput.pressKeys("/theme github".split(""))
+    await setup.mockInput.pressKey("RETURN")
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(frame.includes("theme: GitHub"), "/theme reports on the status line")
+    assert(!frame.split("\n").some((line) => line.includes("╭")), "/theme leaves no banner behind")
+    await setup.mockInput.pressKeys("/theme default".split(""))
+    await setup.mockInput.pressKey("RETURN")
+    await setup.renderOnce()
+
     // The prompt input owns focus; an empty prompt lets arrows through to the
     // file list via the global key handler.
     await setup.mockInput.pressArrow("down")
@@ -866,6 +972,25 @@ async function main(): Promise<void> {
     frame = setup.captureCharFrame()
     assert(frame.includes("brandNew"), "/open jumps to the matching file")
     assert(!frame.includes("/open"), "prompt is cleared after submit")
+
+    // Esc opens the menu as a drop-up over the review: the review stays
+    // visible, and the panel is anchored near the bottom, not the top.
+    await setup.mockInput.pressEscape()
+    await new Promise((r) => setTimeout(r, 60))
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(frame.includes("Menu"), "Esc opens the menu")
+    assert(frame.includes("Walk through with agent"), "menu rows are listed")
+    assert(frame.includes("Files (3)"), "the review stays visible under the menu")
+    assert(
+      frame.split("\n").findIndex((line) => line.includes("Menu")) > 10,
+      "the menu drops up from the bottom",
+    )
+    await setup.mockInput.pressEscape()
+    await new Promise((r) => setTimeout(r, 60))
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(!frame.includes("Walk through with agent"), "Esc closes the menu")
 
     // /run executes a shell command and shows output in the log view.
     await setup.mockInput.pressKeys("/run echo chert-e2e-ok".split(""))

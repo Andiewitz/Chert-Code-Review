@@ -4,21 +4,19 @@
 // PRECEDENCE (do not reorder without checking every overlay):
 //   1. review-source picker (it owns Esc/Enter/arrows while open)
 //   2. Ctrl+P command picker toggle
-//   3. highlight menu (arrows / Enter / Esc)
-//   4. Esc, in this order: picker, menu, projects, all-files, review picker,
-//      note editing, prompt text, open the menu
-//   5. suggestion navigation and Tab completion
-//   6. Enter: suggestion accept, theme accept, prompt submit, tree open,
-//      done row, home recents, menu, projects, all-files, review actions
-//   7. empty prompt: done, home recents, review screen (arrows, Space),
-//      tree, menu, projects, all-files
+//   3. Esc, in this order: picker, menu, projects, review picker,
+//      prompt text, alert, open the menu
+//   4. suggestion navigation and Tab completion
+//   5. Enter: suggestion accept, theme accept, prompt submit, menu, projects,
+//      tree open, done row, home recents, review actions
+//   6. empty prompt: menu, projects, done, home recents, review (arrows, Space),
+//      tree
 // Anything not handled here falls through to the renderer.
 
 import type { SelectOption } from "@opentui/core"
 import { basename } from "node:path"
 import type { Row } from "../diffrows"
 import type { ReviewFile } from "../git"
-import type { Highlight } from "../highlights"
 import { forgetProject } from "../projects"
 import type { Suggestion } from "./commands/registry"
 import type { MainView } from "./commands/context"
@@ -29,8 +27,6 @@ export interface KeyPress {
   ctrl?: boolean
   preventDefault(): void
 }
-
-type ResolvedHighlightMap = Map<string, { startRow: number; endRow: number; moved: boolean } | null>
 
 export interface KeyboardContext {
   // Predicates computed from prompt + suggestion state
@@ -44,7 +40,6 @@ export interface KeyboardContext {
   reviewPickerIndex(): number
   setReviewPickerIndex(update: number | ((index: number) => number)): void
   allReviewTargets(): Suggestion[]
-  scrollReviewPicker(y: number): void
 
   // Prompt + suggestions
   pickerOpen(): boolean
@@ -61,22 +56,8 @@ export interface KeyboardContext {
   cdMatches(): string[] | null
   runCommand(line: string): void
 
-  // Highlight menu, notes and mouse-driven highlights
-  highlightMenuOpen(): boolean
-  setHighlightMenuOpen(open: boolean): void
-  highlightMenuIndex(): number
-  setHighlightMenuIndex(update: number | ((index: number) => number)): void
-  highlightNoteMode(): boolean
-  setHighlightNoteMode(active: boolean): void
-  setHighlightNoteText(text: string): void
-  setPendingHighlight(highlight: Highlight | null): void
-  highlightForRowIndex(index: number): Highlight | undefined
-  highlights(): Highlight[]
-  setResolvedHighlights(map: ResolvedHighlightMap): void
-  resolvedHighlights(): ResolvedHighlightMap
-  persistHighlights(next: Highlight[]): boolean
-  markAsked(path: string): void
-  askAgent(prompt: string): void
+  /** PageUp/PageDown in the agent band. */
+  scrollAnswer(direction: -1 | 1): void
 
   // Overlays and views
   menuOpen(): boolean
@@ -89,12 +70,11 @@ export interface KeyboardContext {
   setProjectsOpen(open: boolean): void
   projectsIndex(): number
   setProjectsIndex(update: number | ((index: number) => number)): void
-  allFilesOpen(): boolean
-  setAllFilesOpen(open: boolean): void
-  allFilesIndex(): number
-  setAllFilesIndex(update: number | ((index: number) => number)): void
   view(): MainView
   setStatus(text: string): void
+  /** An error or notice banner is showing; Esc dismisses it. */
+  alertOpen(): boolean
+  dismissAlert(): void
   hasProject(): boolean
   openRecent(index: number): void
   loadRecent(): Array<{ path: string }>
@@ -105,7 +85,6 @@ export interface KeyboardContext {
   activateAction(index: number): void
   navigate(delta: number): void
   codeRows(): Row[]
-  codeCursorRow(): number
   file(): ReviewFile | undefined
   files(): ReviewFile[]
   selectFile(index: number): void
@@ -114,7 +93,6 @@ export interface KeyboardContext {
   approved(): boolean
   /** Space: approve or un-approve the current file, then move on. */
   toggleApproval(): void
-  scrollAllFiles(y: number): void
 
   // Tree + done
   moveTreeIndex(delta: number): void
@@ -138,7 +116,6 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
       const dir = key.name === "up" ? -1 : 1
       ctx.setReviewPickerIndex((i) => {
         const next = Math.max(0, Math.min(i + dir, Math.max(0, items.length - 1)))
-        ctx.scrollReviewPicker(Math.max(0, next - 6))
         return next
       })
       return
@@ -172,61 +149,6 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
     return
   }
 
-  // Highlight menu overlay
-  if (ctx.highlightMenuOpen()) {
-    if (key.name === "up" || key.name === "down") {
-      key.preventDefault()
-      const dir = key.name === "up" ? -1 : 1
-      ctx.setHighlightMenuIndex((i) => Math.max(0, Math.min(i + dir, 3)))
-      return
-    }
-    if (key.name === "return" || key.name === "enter") {
-      key.preventDefault()
-      const idx = ctx.highlightMenuIndex()
-      const cur = ctx.codeCursorRow()
-      const h = ctx.highlightForRowIndex(cur)
-      if (!h) {
-        ctx.setHighlightMenuOpen(false)
-        return
-      }
-      if (idx === 0) {
-        // Ask the AI about these lines
-        ctx.setHighlightMenuOpen(false)
-        const q = `Look at lines ${h.start}-${h.end} in ${h.path}. ${h.note ? h.note + " " : ""}The lines are:\n${h.text.map((t) => `  ${t}`).join("\n")}\nExplain in plain words, with the exact lines.`
-        ctx.markAsked(h.path)
-        void ctx.askAgent(q)
-        return
-      }
-      if (idx === 1) {
-        // Edit note
-        ctx.setHighlightMenuOpen(false)
-        ctx.setHighlightNoteMode(true)
-        ctx.setHighlightNoteText(h.note)
-        ctx.setPendingHighlight(h)
-        ctx.setPromptValue(h.note)
-        ctx.setStatus("edit note (Enter saves, Esc cancels)")
-        return
-      }
-      if (idx === 2) {
-        // Dismiss (AI) or Remove (mine)
-        const saved = ctx.persistHighlights(ctx.highlights().filter((x) => x.id !== h.id))
-        ctx.setResolvedHighlights(new Map(ctx.resolvedHighlights()))
-        ctx.setHighlightMenuOpen(false)
-        if (saved) ctx.setStatus(h.by === "ai" ? "dismissed AI highlight" : "removed highlight")
-        return
-      }
-      // Close
-      ctx.setHighlightMenuOpen(false)
-      return
-    }
-    if (key.name === "escape") {
-      key.preventDefault()
-      ctx.setHighlightMenuOpen(false)
-      return
-    }
-    return
-  }
-
   // Esc
   if (key.name === "escape") {
     if (ctx.pickerOpen()) {
@@ -236,30 +158,22 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
     }
     if (ctx.menuOpen()) {
       ctx.setMenuOpen(false)
-      ctx.setAllFilesOpen(false)
       return
     }
     if (ctx.projectsOpen()) {
       ctx.setProjectsOpen(false)
       return
     }
-    if (ctx.allFilesOpen()) {
-      ctx.setAllFilesOpen(false)
-      return
-    }
     if (ctx.reviewPickerOpen()) {
       ctx.setReviewPickerOpen(false)
       return
     }
-    if (ctx.highlightNoteMode()) {
-      ctx.setHighlightNoteMode(false)
-      ctx.setPendingHighlight(null)
-      ctx.clearInput()
-      ctx.setStatus("")
-      return
-    }
     if (hasText) {
       ctx.clearInput()
+      return
+    }
+    if (ctx.alertOpen()) {
+      ctx.dismissAlert()
       return
     }
     if (ctx.view() === "review") {
@@ -319,19 +233,7 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
       ctx.submit()
       return
     }
-    if (ctx.view() === "tree") {
-      ctx.openTreeSelection()
-      return
-    }
-    if (ctx.view() === "done") {
-      ctx.activateDoneRow(ctx.doneIndex())
-      return
-    }
-    if (ctx.view() === "review" && !ctx.hasProject()) {
-      ctx.openRecent(ctx.projectsIndex())
-      return
-    }
-
+    // Panels floating over the current view own Enter while they are open.
     if (ctx.menuOpen()) {
       ctx.handleMenuSelection(ctx.menuIndex())
       return
@@ -346,13 +248,16 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
       }
       return
     }
-    if (ctx.allFilesOpen()) {
-      const af = (ctx.files() ?? [])[ctx.allFilesIndex()]
-      if (af) {
-        ctx.setAllFilesOpen(false)
-        ctx.setMenuOpen(false)
-        ctx.selectFile(ctx.files()!.indexOf(af))
-      }
+    if (ctx.view() === "tree") {
+      ctx.openTreeSelection()
+      return
+    }
+    if (ctx.view() === "done") {
+      ctx.activateDoneRow(ctx.doneIndex())
+      return
+    }
+    if (ctx.view() === "review" && !ctx.hasProject()) {
+      ctx.openRecent(ctx.projectsIndex())
       return
     }
     if (ctx.view() === "review") {
@@ -364,63 +269,7 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
 
   // Empty box: screen keys
   if (!hasText) {
-    if (ctx.view() === "done") {
-      if (key.name === "up" || key.name === "down") {
-        key.preventDefault()
-        const dir = key.name === "up" ? -1 : 1
-        ctx.setDoneIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, ctx.doneOptions().length - 1))))
-        return
-      }
-      return
-    }
-    if (ctx.view() === "review" && !ctx.hasProject()) {
-      if (key.name === "up" || key.name === "down") {
-        key.preventDefault()
-        const dir = key.name === "up" ? -1 : 1
-        const count = ctx.loadRecent().length
-        ctx.setProjectsIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, count - 1))))
-        return
-      }
-      if (key.name === "delete") {
-        key.preventDefault()
-        const item = ctx.loadRecent()[ctx.projectsIndex()]
-        if (item) {
-          forgetProject(item.path)
-          ctx.setProjectsIndex((i) => Math.max(0, Math.min(i, Math.max(0, ctx.loadRecent().length - 1))))
-          ctx.setStatus(`forgot ${basename(item.path)}`)
-        }
-        return
-      }
-      return
-    }
-    if (ctx.view() === "review") {
-      if (key.name === "left" || key.name === "right") {
-        key.preventDefault()
-        const dir = key.name === "left" ? -1 : 1
-        ctx.setAction((i) => Math.max(0, Math.min(i + dir, ctx.actionCount() - 1)))
-        return
-      }
-      if (key.name === " " || key.name === "space") {
-        key.preventDefault()
-        ctx.toggleApproval()
-        return
-      }
-      if (key.name === "up" || key.name === "down") {
-        key.preventDefault()
-        ctx.navigate(key.name === "up" ? -1 : 1)
-        return
-      }
-      return
-    }
-    if (ctx.view() === "tree") {
-      if (key.name === "up" || key.name === "down") {
-        key.preventDefault()
-        ctx.moveTreeIndex(key.name === "up" ? -1 : 1)
-        return
-      }
-      return
-    }
-
+    // A panel floating over the view owns the arrows while it is open.
     if (ctx.menuOpen()) {
       if (key.name === "up" || key.name === "down") {
         key.preventDefault()
@@ -456,15 +305,63 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
       }
       return
     }
-    if (ctx.allFilesOpen()) {
+    if (ctx.view() === "done") {
       if (key.name === "up" || key.name === "down") {
         key.preventDefault()
         const dir = key.name === "up" ? -1 : 1
-        ctx.setAllFilesIndex((i) => {
-          const next = Math.max(0, Math.min(i + dir, (ctx.files()?.length ?? 1) - 1))
-          ctx.scrollAllFiles(Math.max(0, next - 6))
-          return next
-        })
+        ctx.setDoneIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, ctx.doneOptions().length - 1))))
+        return
+      }
+      return
+    }
+    if (ctx.view() === "review" && !ctx.hasProject()) {
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault()
+        const dir = key.name === "up" ? -1 : 1
+        const count = ctx.loadRecent().length
+        ctx.setProjectsIndex((i) => Math.max(0, Math.min(i + dir, Math.max(0, count - 1))))
+        return
+      }
+      if (key.name === "delete") {
+        key.preventDefault()
+        const item = ctx.loadRecent()[ctx.projectsIndex()]
+        if (item) {
+          forgetProject(item.path)
+          ctx.setProjectsIndex((i) => Math.max(0, Math.min(i, Math.max(0, ctx.loadRecent().length - 1))))
+          ctx.setStatus(`forgot ${basename(item.path)}`)
+        }
+        return
+      }
+      return
+    }
+    if (ctx.view() === "review") {
+      if (key.name === "pageup" || key.name === "pagedown") {
+        key.preventDefault()
+        ctx.scrollAnswer(key.name === "pageup" ? -1 : 1)
+        return
+      }
+      if (key.name === "left" || key.name === "right") {
+        key.preventDefault()
+        const dir = key.name === "left" ? -1 : 1
+        ctx.setAction((i) => Math.max(0, Math.min(i + dir, ctx.actionCount() - 1)))
+        return
+      }
+      if (key.name === " " || key.name === "space") {
+        key.preventDefault()
+        ctx.toggleApproval()
+        return
+      }
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault()
+        ctx.navigate(key.name === "up" ? -1 : 1)
+        return
+      }
+      return
+    }
+    if (ctx.view() === "tree") {
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault()
+        ctx.moveTreeIndex(key.name === "up" ? -1 : 1)
         return
       }
       return

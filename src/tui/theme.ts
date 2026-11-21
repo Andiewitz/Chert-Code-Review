@@ -31,6 +31,8 @@ export interface ThemePalette {
   text: string
   bright: string
   selectedBg: string
+  /** A raised surface for floating panels, a step above the page background. */
+  panel: string
   accent: string
   purple: string
   purpleBright: string
@@ -47,6 +49,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     text: "#cfc8d8",
     bright: "#f6f2fb",
     selectedBg: "#241d33",
+    panel: "#191320",
     accent: "#a78bfa",
     purple: "#a78bfa",
     purpleBright: "#d6c6ff",
@@ -61,6 +64,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     text: "#ffffff",
     bright: "#ffffff",
     selectedBg: "#222222",
+    panel: "#101010",
     accent: "#00d4ff",
     purple: "#00d4ff",
     purpleBright: "#e0ffff",
@@ -75,6 +79,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     text: "#000000",
     bright: "#000000",
     selectedBg: "#eaeef2",
+    panel: "#f6f8fa",
     accent: "#0969da",
     purple: "#0969da",
     purpleBright: "#0550ae",
@@ -89,6 +94,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     text: "#c9d1d9",
     bright: "#f0f6fc",
     selectedBg: "#161b22",
+    panel: "#0d1117",
     accent: "#58a6ff",
     purple: "#58a6ff",
     purpleBright: "#79c0ff",
