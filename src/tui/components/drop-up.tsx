@@ -1,16 +1,14 @@
-// A floating panel anchored above the prompt: menus and pickers open over the
-// review instead of replacing it. One component for every list keeps the
-// interaction identical wherever it appears.
+// A floating list anchored above the prompt. Menus, pickers and the command
+// suggestions open over the review instead of replacing it. Flat by design:
+// one rule on top and the panel background behind the rows, no frame.
 
-import { Show } from "solid-js"
+import { Show, type JSX } from "solid-js"
 import { ATTR, COLORS } from "../theme"
 import { RowList } from "./row-list"
 import type { PickerRow } from "./row-list"
 
 export interface DropUpProps {
   title: string
-  /** Key hint on the right of the title row. */
-  hint: string
   rows: () => PickerRow[]
   index: () => number
   /** Shown in place of the list when `rows` is empty. */
@@ -35,38 +33,40 @@ export function listWindow(
   return { rows: rows.slice(start, start + visible), index: current - start }
 }
 
-export function DropUp(props: DropUpProps) {
-  const count = () => props.rows().length
-  const visible = () => Math.min(count(), Math.max(1, props.maxRows))
-  // Borders are part of the height: one title row, one row per visible item,
-  // one top and one bottom border.
-  const height = () => Math.max(4, visible() + 3)
-  const window = () => listWindow(props.rows(), props.index(), props.maxRows)
-
+/** The shared shell: full width, opaque, flush against the prompt's rule. */
+export function DropUpPanel(props: { height: number; children: JSX.Element }) {
   return (
     <box
       position="absolute"
       left={0}
       right={0}
-      bottom={5}
-      height={height()}
+      bottom={4}
+      height={props.height}
       zIndex={50}
       flexDirection="column"
       backgroundColor={COLORS().panel}
-      border
-      borderColor={COLORS().purpleDim}
+      border={["top"]}
+      borderColor={COLORS().rule}
       paddingLeft={1}
       paddingRight={1}
     >
-      <box height={1} flexShrink={0} flexDirection="row">
-        <text fg={COLORS().purpleBright} attributes={ATTR.bold}>
-          {props.title}
-        </text>
-        <box flexGrow={1} />
-        <text fg={COLORS().dim} attributes={ATTR.dim}>
-          {props.hint}
-        </text>
-      </box>
+      {props.children}
+    </box>
+  )
+}
+
+export function DropUp(props: DropUpProps) {
+  const count = () => props.rows().length
+  const visible = () => Math.min(count(), Math.max(1, props.maxRows))
+  // The top rule, the title, then one row per visible item.
+  const height = () => 2 + Math.max(1, visible())
+  const window = () => listWindow(props.rows(), props.index(), props.maxRows)
+
+  return (
+    <DropUpPanel height={height()}>
+      <text fg={COLORS().purpleBright} attributes={ATTR.bold}>
+        {props.title}
+      </text>
       <Show
         when={count() > 0}
         fallback={
@@ -77,6 +77,6 @@ export function DropUp(props: DropUpProps) {
       >
         <RowList rows={() => window().rows} index={() => window().index} baseBg={COLORS().panel} />
       </Show>
-    </box>
+    </DropUpPanel>
   )
 }

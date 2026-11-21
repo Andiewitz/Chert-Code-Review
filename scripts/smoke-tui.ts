@@ -944,13 +944,33 @@ async function main(): Promise<void> {
       assert(header > 0 && prompt === header + 2, `empty answer band is compact (${header} -> ${prompt})`)
     }
 
+    // Suggestions live in the drop-up box above the prompt, not inline below it.
+    await setup.mockInput.pressKeys("/op".split(""))
+    await setup.renderOnce()
+    {
+      const lines = setup.captureCharFrame().split("\n")
+      const promptRow = lines.findIndex((line) => line.includes("> /op"))
+      const suggestionRow = lines.findIndex((line) => line.includes("/open"))
+      assert(suggestionRow >= 0, "typing /o shows command suggestions")
+      assert(suggestionRow < promptRow, "suggestions sit above the prompt")
+      assert(!lines.some((line) => line.includes("╭")), "suggestions use the flat box, no frame")
+    }
+    await setup.mockInput.pressEscape()
+    await new Promise((r) => setTimeout(r, 60))
+    await setup.renderOnce()
+
     // /theme switches immediately and reports on the status line, not in a banner.
     await setup.mockInput.pressKeys("/theme github".split(""))
     await setup.mockInput.pressKey("RETURN")
     await setup.renderOnce()
     frame = setup.captureCharFrame()
     assert(frame.includes("theme: GitHub"), "/theme reports on the status line")
-    assert(!frame.split("\n").some((line) => line.includes("╭")), "/theme leaves no banner behind")
+    {
+      const lines = frame.split("\n")
+      const promptRow = lines.findIndex((line) => line.includes("> ask a question"))
+      const themeRow = lines.findIndex((line) => line.includes("theme: GitHub"))
+      assert(themeRow > promptRow, "/theme leaves no banner above the prompt")
+    }
     await setup.mockInput.pressKeys("/theme default".split(""))
     await setup.mockInput.pressKey("RETURN")
     await setup.renderOnce()

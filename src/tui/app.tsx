@@ -22,6 +22,7 @@ import { configDir, readJson, writeJsonAtomic } from "../config"
 import { HomeScreen } from "./components/home-screen"
 import { Overlays } from "./components/overlays"
 import { RowList } from "./components/row-list"
+import { SuggestionBox } from "./components/suggestion-box"
 import { Wordmark } from "./components/wordmark"
 import { connectCommand, disconnectCommand, modelsCommand, useCommand } from "./commands/connectors"
 import {
@@ -1292,7 +1293,12 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   }
 
   function footerHints(): string {
-    const hasText = (inputRef?.value ?? "") !== ""
+    const hasText = inputValue() !== ""
+    if (suggestionWindow().show) {
+      return pickerOpen()
+        ? "↑↓ choose · Enter run · Esc close · Ctrl+C quit"
+        : "↑↓ choose · Enter run · Esc clear · Ctrl+C quit"
+    }
     if (hasText) return "Enter send · Esc clear · Ctrl+C quit"
     if (alert() !== null) return "Esc dismiss · Ctrl+C quit"
     if (menuOpen()) return "↑↓ choose · Enter go · Esc close · Ctrl+C quit"
@@ -1807,8 +1813,6 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           marginRight={1}
           flexDirection="row"
           backgroundColor={COLORS().panel}
-          border
-          borderColor={alert()!.kind === "error" ? COLORS().danger : COLORS().purpleDim}
           paddingLeft={1}
           paddingRight={1}
         >
@@ -1852,55 +1856,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           onInput={(value: string) => setInputValue(value)}
         />
       </box>
-      <Show
-        when={suggestionWindow().show}
-        fallback={<box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />}
-      >
-        <box
-          flexShrink={0}
-          flexDirection="column"
-          border={["bottom"]}
-          borderColor={COLORS().rule}
-          paddingLeft={1}
-          paddingRight={1}
-        >
-          <Show when={pickerOpen()}>
-            <text fg={COLORS().dim}> commands (Ctrl+P)</text>
-          </Show>
-          <For each={suggestionWindow().items}>
-            {(cmd, i) => {
-              const idx = () => suggestionWindow().offset + i()
-              const active = () =>
-                idx() === Math.min(suggestionIndex(), Math.max(0, visibleSuggestions().length - 1))
-              const pal = () => (themeInput() !== null ? THEMES[cmd.key as ThemeName] : null)
-              const bg = () =>
-                pal()
-                  ? active()
-                    ? pal()!.selectedBg
-                    : pal()!.bg
-                  : active()
-                    ? COLORS().selectedBg
-                    : COLORS().bg
-              const labelFg = () =>
-                pal()
-                  ? active()
-                    ? pal()!.bright
-                    : pal()!.accent
-                  : active()
-                    ? COLORS().bright
-                    : COLORS().accent
-              const descFg = () =>
-                pal() ? (active() ? pal()!.text : pal()!.dim) : active() ? COLORS().text : COLORS().dim
-              return (
-                <box height={1} flexDirection="row" backgroundColor={bg()}>
-                  <text fg={labelFg()}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
-                  <text fg={descFg()}>{cmd.description}</text>
-                </box>
-              )
-            }}
-          </For>
-        </box>
-      </Show>
+      <box height={1} flexShrink={0} border={["bottom"]} borderColor={COLORS().rule} />
       {/* One line of hints, with the action buttons on its right. */}
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={COLORS().dim} attributes={ATTR.dim}>
@@ -1938,6 +1894,16 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         loadRecent={loadRecent}
         maxRows={overlayRows()}
       />
+
+      <Show when={suggestionWindow().show}>
+        <SuggestionBox
+          items={suggestionWindow().items}
+          offset={suggestionWindow().offset}
+          index={suggestionIndex()}
+          pickerOpen={pickerOpen()}
+          themePreview={themeInput() !== null}
+        />
+      </Show>
 
       <Show when={cdMatches() !== null}>
         <box height={1} flexShrink={0} paddingLeft={1}>

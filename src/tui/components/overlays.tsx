@@ -25,8 +25,6 @@ export interface OverlaysProps {
   maxRows: number
 }
 
-const HINT = "\u2191\u2193 choose \u00b7 Enter \u00b7 Esc close"
-
 export function Overlays(props: OverlaysProps) {
   const options = (list: () => SelectOption[]) => () =>
     list().map((option) => ({ label: option.name, hint: option.description }))
@@ -36,7 +34,6 @@ export function Overlays(props: OverlaysProps) {
       <Show when={props.menuOpen()}>
         <DropUp
           title="Menu"
-          hint={HINT}
           rows={options(props.menuOptions)}
           index={props.menuIndex}
           empty=""
@@ -46,7 +43,6 @@ export function Overlays(props: OverlaysProps) {
       <Show when={props.reviewPickerOpen()}>
         <DropUp
           title="Review source"
-          hint={HINT}
           rows={() =>
             props.allReviewTargets().map((target) => ({
               label: target.label,
@@ -61,7 +57,6 @@ export function Overlays(props: OverlaysProps) {
       <Show when={props.projectsOpen() && props.hasProject()}>
         <DropUp
           title="Recent projects"
-          hint={HINT}
           rows={() =>
             props.loadRecent().map((recent) => ({
               label: basename(recent.path),
