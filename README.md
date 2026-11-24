@@ -33,12 +33,12 @@ Review screen (the files and diff fill the top; the agent's answer band, the pro
 | key              | action                                                                                    |
 | ---------------- | ----------------------------------------------------------------------------------------- |
 | `Up` / `Down`    | previous / next file                                                                      |
-| `Left` / `Right` | move across the action bar: Back · Next                                                   |
+| `Left` / `Right` | move across the action bar: Back · Next (Finish on the last file)                          |
 | `Enter`          | run the highlighted action                                                                |
-| `Space`          | approve this file and move to the next unreviewed one                                     |
+| `Space`          | approve or unapprove this file; approving moves to the next unapproved one                |
 | drag (mouse)     | copy the lines you drag over to the clipboard, ready to paste into the prompt            |
 | `PgUp` / `PgDn`  | scroll the answer pane                                                                   |
-| `Esc`            | open or close the menu; dismiss a message                                                  |
+| `Esc`            | open or close the menu; dismiss a message; leave the done screen                          |
 | `Ctrl+C`         | quit                                                                                      |
 
 A drag over the diff copies the lines (with their file and line numbers) and says

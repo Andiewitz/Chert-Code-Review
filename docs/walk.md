@@ -76,6 +76,13 @@ forked id is stored, and every later call resumes that fork. The original sessio
 is never written to. The forked id is shown on the done screen so the discussion
 can be resumed by hand.
 
+The plan becomes the review order: the file list, the arrow keys and Back/Next
+all follow it, and the band says why the file is next. Reaching a file asks the
+agent for that file automatically — the overview notice names the whole change,
+and each file keeps its own explanation. Moving away from a file keeps its
+answer; coming back restores it instead of spending tokens again. The next
+unapproved file is warmed while you read.
+
 ## Protocol (`chert-review/1`)
 
 JSON only, validated by hand in `src/review/protocol.ts`; the exported schema is
@@ -116,6 +123,7 @@ Highlights, notes and review exports keep their existing files.
 
 After the review, if you flagged anything, chert writes
 `<gitdir>/chert/handback.md` with your notes and the file/line references, and
-the done screen shows the id of the forked session. Handing the notes back is
-yours to do: chert never writes into the original session, and it never resumes
-one on its own.
+the done screen shows the approval count and the id of the forked session.
+`Back to the files` (or `Esc`) returns to the review without ending the walk.
+Handing the notes back is yours to do: chert never writes into the original
+session, and it never resumes one on its own.

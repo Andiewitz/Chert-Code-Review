@@ -17,7 +17,7 @@ Commands:
   (default)       open the review TUI
   tui [path]      same thing, spelled out
 
-Keys inside the TUI: ↑↓ files · ←→ action · Enter run · Space reviewed ·
+Keys inside the TUI: ↑↓ files · ←→ action · Enter run · Space approve ·
   drag highlight · Esc menu · Ctrl+C quit. Type / for commands.
 
 Slash commands:

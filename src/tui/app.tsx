@@ -132,8 +132,6 @@ const HANDLERS: Record<string, CommandHandler> = {
   models: modelsCommand,
 }
 
-const ACTION_ITEMS = ["Back", "Next"]
-
 /** A failure or note shown over the current screen, never instead of it. */
 interface Alert {
   kind: "error" | "notice"
@@ -201,6 +199,16 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   let patchHashes = new Map<string, string>()
   const [walkIntent, setWalkIntent] = createSignal("")
   const [walkSession, setWalkSession] = createSignal<string | null>(null)
+  const [walkActive, setWalkActive] = createSignal(false)
+  const [walkReading, setWalkReading] = createSignal<string | null>(null)
+  const [walkReasons, setWalkReasons] = createSignal(new Map<string, string>())
+  const [pendingAskPath, setPendingAskPath] = createSignal<string | null>(null)
+  // One entry per file the agent has explained, and one per question, so moving
+  // back and forth restores that file's words without asking again.
+  let walkReports = new Map<string, WalkFileResult>()
+  let walkAnswers = new Map<string, { question: string; text: string; isError: boolean }>()
+  // Bumped whenever the walk is stopped or replaced; late callbacks are ignored.
+  let walkToken = 0
   let walk: Walk | null = null
   const [highlights, setHighlights] = createSignal<Highlight[]>([])
   const [resolvedHighlights, setResolvedHighlights] = createSignal(
@@ -248,16 +256,63 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     return list[Math.min(selected(), list.length - 1)]
   })
 
-  /** The answer band is only tall when it has something to show. */
-  const answerShowing = createMemo(
-    () => busy() || (answerOpen() && answerFile() === (file()?.path ?? "")),
-  )
+  /** The answer band is only tall when it has something to show for this file. */
+  const answerShowing = createMemo(() => {
+    const path = file()?.path ?? ""
+    const asking = busy() && (pendingAskPath() === null || pendingAskPath() === path)
+    return asking || walkReading() === path || (answerOpen() && answerFile() === path)
+  })
 
   const isFirstFile = createMemo(() => {
     const q = queue()
     const cur = file()?.path
     if (q.length === 0 || cur === undefined) return true
     return q.indexOf(cur) <= 0
+  })
+
+  const isLastFile = createMemo(() => {
+    const q = queue()
+    const cur = file()?.path
+    if (q.length === 0 || cur === undefined) return (files()?.length ?? 0) <= 1
+    return q.indexOf(cur) === q.length - 1
+  })
+
+  const actionLabels = createMemo(() => ["Back", isLastFile() ? "Finish" : "Next"])
+
+  const bandLabel = createMemo(() => {
+    const path = file()?.path ?? ""
+    const asking = busy() && (pendingAskPath() === null || pendingAskPath() === path)
+    if (asking) return `You asked: ${truncateEnd(lastQuestion(), 50)}  \u00b7  ${activeLabel()}`
+    if (walkReading() === path) {
+      const reason = walkReasons().get(path)
+      return `Walk${reason ? ` \u00b7 ${truncateEnd(reason, 60)}` : " \u00b7 reading\u2026"}`
+    }
+    if (answerOpen() && answerFile() === path) {
+      if (lastQuestion() !== "") {
+        return `You asked: ${truncateEnd(lastQuestion(), 50)}  \u00b7  ${activeLabel()}`
+      }
+      if (walkActive()) {
+        const reason = walkReasons().get(path)
+        if (reason !== undefined && reason !== "") return `Walk \u00b7 ${truncateEnd(reason, 60)}`
+        return `Walk \u00b7 ${truncateEnd(walkIntent() || "agent notes", 60)}`
+      }
+      return `Answer  \u00b7  ${activeLabel()}`
+    }
+    return walkActive()
+      ? "Ask about this file — the agent has the author's context."
+      : "Ask about this file."
+  })
+
+  const bandBusy = createMemo(() => {
+    const path = file()?.path ?? ""
+    return (busy() && (pendingAskPath() === null || pendingAskPath() === path)) || walkReading() === path
+  })
+
+  const bandBody = createMemo(() => {
+    const path = file()?.path ?? ""
+    if (busy() && (pendingAskPath() === null || pendingAskPath() === path)) return status()
+    if (walkReading() === path) return "Reading the diff and the agent's notes\u2026"
+    return lastAnswer()
   })
 
   // Panels float over the review; they never replace it.
@@ -437,6 +492,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
 
   // Synchronous loads
   function load(): void {
+    const wasWalking = walk !== null
+    if (wasWalking) stopWalk()
     setFiles(null)
     setLoadError(null)
     setPatch("")
@@ -482,6 +539,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         setTreeIndex(0)
       })
     }
+    if (wasWalking) showNotice("The review changed, so the walk ended. Run /walk again to keep going.")
   }
 
   function selectFile(index: number): void {
@@ -493,6 +551,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const current = list[i]
     if (patchFor === current.path) {
       setAction(1)
+      restoreWalkResponse(current.path)
       return
     }
     const cached = patchCache.get(current.path)
@@ -501,6 +560,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       patchFor = current.path
       setAction(1)
       bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
+      restoreWalkResponse(current.path)
       return
     }
     try {
@@ -515,6 +575,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     }
     setAction(1)
     bestEffort("scroll diffScrollRef", () => diffScrollRef?.scrollTo({ x: 0, y: 0 }))
+    restoreWalkResponse(current.path)
   }
 
   function navigate(delta: number): void {
@@ -574,7 +635,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
 
   function nextFile(): void {
     const cur = file()?.path
-    if (cur) {
+    if (cur && !isFileApproved(cur)) {
+      // Passing an approved file does not turn a decision into a skip.
       const mem = new Map(fileMemory())
       if (!mem.has(cur)) mem.set(cur, "passed")
       setFileMemory(mem)
@@ -625,7 +687,13 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const hash = approvalHash(f.path)
     const wasApproved = isApproved(reviewState, f.path, hash)
     if (wasApproved) clearApproval(reviewState, f.path)
-    else setApproval(reviewState, f.path, hash)
+    else {
+      setApproval(reviewState, f.path, hash)
+      // A decision replaces an earlier "passed without asking".
+      const mem = new Map(fileMemory())
+      mem.delete(f.path)
+      setFileMemory(mem)
+    }
     persistReviewState()
     setApprovalsVersion((v) => v + 1)
     setStatus(wasApproved ? `un-approved ${f.path}` : `approved ${f.path}`)
@@ -647,8 +715,20 @@ export function ReviewApp(props: ReviewAppProps = {}) {
 
   function finishReview(): void {
     const path = tryOr(() => writeHandback(cwd(), highlights(), walk?.sessionId() ?? undefined), null)
+    // A plan or theme notice belongs to the review, not the done screen.
+    if (alert()?.kind === "notice") setAlert(null)
+    setDoneIndex(0)
     setView("done")
     if (path !== null) setStatus(`notes written to ${path}`)
+  }
+
+  /** Leave the done screen without ending the walk or losing its notes. */
+  function backToReview(): void {
+    if (!hasProject()) return
+    setView("review")
+    const path = file()?.path
+    if (path !== undefined) goToFile(path)
+    else selectFile(0)
   }
 
   function approvedCount(): number {
@@ -675,33 +755,123 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     }
   }
 
+  /** Forget everything the current walk produced; the session itself is closed separately. */
+  function resetWalkOutput(): void {
+    walkReports = new Map()
+    walkAnswers = new Map()
+    setWalkActive(false)
+    setWalkSession(null)
+    setWalkReading(null)
+    setWalkReasons(new Map())
+    setWalkIntent("")
+    setPendingAskPath(null)
+    setAnswerOpen(false)
+    setAnswerFile("")
+    setLastQuestion("")
+    setLastAnswer("")
+    setAnswerIsError(false)
+  }
+
+  function stopWalk(): void {
+    // Invalidate first: closing aborts a pending call, and its callback must not
+    // put an error or an answer on the next walk's screen.
+    walkToken += 1
+    walk?.close()
+    walk = null
+    resetWalkOutput()
+    setBusy(false)
+    setStatus("")
+  }
+
+  function showWalkReport(path: string): boolean {
+    const report = walkReports.get(path)
+    if (report === undefined) return false
+    setLastQuestion("")
+    setLastAnswer(analysisText(report))
+    setAnswerFile(path)
+    setAnswerIsError(false)
+    setAnswerOpen(true)
+    setWalkIntent(report.analysis.intent)
+    return true
+  }
+
+  function showWalkAnswer(path: string): boolean {
+    const answer = walkAnswers.get(path)
+    if (answer === undefined) return false
+    setLastQuestion(answer.question)
+    setLastAnswer(answer.text)
+    setAnswerFile(path)
+    setAnswerIsError(answer.isError)
+    setAnswerOpen(true)
+    return true
+  }
+
+  /** Restore this file's last words, or ask the agent for them now. */
+  function restoreWalkResponse(path: string): void {
+    if (walk === null) return
+    if (showWalkAnswer(path) || showWalkReport(path)) return
+    if (walkReading() === path) return
+    setWalkReading(path)
+    setLastQuestion("")
+    setLastAnswer("")
+    setAnswerIsError(false)
+    void walk.analyze(path).finally(() => {
+      if (walkReading() === path) setWalkReading(null)
+    })
+  }
+
   function walkOnPlan(plan: PlanResponse): void {
     setWalkIntent(plan.overview)
-    setQueue(plan.order.map((entry) => entry.path))
-    addEntry("system", `Walk: ${plan.overview}`)
+    setWalkReasons(new Map(plan.order.map((entry) => [entry.path, entry.reason])))
+    // The plan becomes the review order: the file list, the arrows and the
+    // Back/Next actions all agree, so the next file is never a surprise.
+    const byPath = new Map((files() ?? []).map((f) => [f.path, f]))
+    const ordered = plan.order.flatMap((entry) => {
+      const file = byPath.get(entry.path)
+      return file === undefined ? [] : [file]
+    })
+    const seen = new Set(ordered.map((f) => f.path))
+    for (const file of files() ?? []) if (!seen.has(file.path)) ordered.push(file)
+    if (ordered.length > 0) setFiles(ordered)
+    setQueue(ordered.map((f) => f.path))
+    showNotice(`Walk: ${plan.overview}`)
     setView("review")
-    const first = plan.order[0]?.path
-    if (first !== undefined) {
-      goToFile(first)
-      void walk?.analyze(first)
-    }
+    const first = ordered[0]?.path
+    if (first !== undefined) goToFile(first)
   }
 
   function walkOnFile(result: WalkFileResult): void {
+    const path = result.analysis.path
+    walkReports.set(path, result)
+    walkAnswers.delete(path)
     // Re-analysis of one file replaces its earlier agent highlights.
-    const kept = highlights().filter((h) => !(h.by === "ai" && h.path === result.analysis.path))
+    const kept = highlights().filter((h) => !(h.by === "ai" && h.path === path))
     persistHighlights([...kept, ...result.highlights])
-    const text = analysisText(result)
-    addEntry("agent", text)
-    setLastQuestion("")
-    setLastAnswer(text)
-    setAnswerFile(result.analysis.path)
+    addEntry("agent", analysisText(result))
+    if (file()?.path === path) showWalkReport(path)
+    const order = queue()
+    const next = order.slice(order.indexOf(path) + 1).find((p) => !isFileApproved(p))
+    if (next !== undefined) walk?.prefetch(next)
+  }
+
+  function walkOnAnswer(
+    answer: AskResponse,
+    anchors: Highlight[],
+    question: string,
+    path: string | undefined,
+  ): void {
+    if (anchors.length > 0) persistHighlights([...highlights(), ...anchors])
+    addEntry("agent", answer.text)
+    if (path !== undefined) {
+      walkAnswers.set(path, { question, text: answer.text, isError: false })
+      if (file()?.path === path) showWalkAnswer(path)
+      return
+    }
+    setLastQuestion(question)
+    setLastAnswer(answer.text)
+    setAnswerFile("")
     setAnswerIsError(false)
     setAnswerOpen(true)
-    setWalkIntent(result.analysis.intent)
-    const order = queue()
-    const next = order.slice(order.indexOf(result.analysis.path) + 1).find((path) => !isFileApproved(path))
-    if (next !== undefined) walk?.prefetch(next)
   }
 
   /** An explicit session id, `fresh` for none, else the project's newest. */
@@ -719,6 +889,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   }
 
   function beginWalk(harness: HarnessAdapter, list: ReviewFile[], baseSessionId: string | undefined): Walk {
+    const token = ++walkToken
+    const stale = () => token !== walkToken
     return createWalk({
       harness,
       projectRoot: cwd(),
@@ -730,19 +902,20 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       state: reviewState,
       persist: persistReviewState,
       callbacks: {
-        status: (text) => setStatus(text),
-        error: (message) => {
-          showError(message)
+        status: (text) => {
+          if (!stale()) setStatus(text)
         },
-        plan: walkOnPlan,
-        file: walkOnFile,
-        ask: (answer, anchors) => {
-          if (anchors.length > 0) persistHighlights([...highlights(), ...anchors])
-          addEntry("agent", answer.text)
-          setLastAnswer(answer.text)
-          setAnswerIsError(false)
-          setAnswerOpen(true)
-          setAnswerFile(file()?.path ?? "")
+        error: (message) => {
+          if (!stale()) showError(message)
+        },
+        plan: (plan) => {
+          if (!stale()) walkOnPlan(plan)
+        },
+        file: (result) => {
+          if (!stale()) walkOnFile(result)
+        },
+        ask: (answer, anchors, question, path) => {
+          if (!stale()) walkOnAnswer(answer, anchors, question, path)
         },
       },
     })
@@ -766,6 +939,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     }
     const harness = choice.harness
     const baseSessionId = walkBaseSession(harness, arg)
+    stopWalk()
     addEntry(
       "system",
       baseSessionId === undefined
@@ -774,27 +948,43 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     )
     setView("review")
     walk = beginWalk(harness, list, baseSessionId)
+    setWalkActive(true)
     await walk.start()
-    setWalkSession(walk.sessionId())
+    const session = walk.sessionId()
+    if (session === null) {
+      // The fork failed: leave the review usable without a walk.
+      stopWalk()
+      return
+    }
+    setWalkSession(session)
   }
 
   /** A question for the forked session, shown in the same answer pane. */
   async function askWalkAgent(prompt: string): Promise<void> {
     if (walk === null) return
+    const path = file()?.path
     addEntry("user", prompt)
     setLastQuestion(prompt)
     setLastAnswer("")
     setAnswerIsError(false)
+    setPendingAskPath(path ?? null)
     setBusy(true)
     const startedAt = Date.now()
     const tick = () => setStatus(`Thinking… ${Math.floor((Date.now() - startedAt) / 1000)}s`)
     tick()
     const interval = setInterval(tick, 1000)
     try {
-      await walk.ask(prompt, file()?.path)
+      const answer = await walk.ask(prompt, path)
+      if (answer === null) {
+        if (path === undefined || !showWalkReport(path)) {
+          setLastQuestion("")
+          setAnswerOpen(false)
+        }
+      }
     } finally {
       clearInterval(interval)
       setBusy(false)
+      setPendingAskPath(null)
       setStatus("")
     }
   }
@@ -810,7 +1000,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const i = Math.max(0, q.indexOf(cur))
     const total = q.length === 0 ? (files()?.length ?? 0) : q.length
     const pos = total === 0 ? 0 : i + 1
-    return `${pos} of ${total} files · ${reviewedCount()} reviewed`
+    return `${pos} of ${total} files · ${approvedTotal()} approved`
   }
 
   if (bootstrapRoot !== undefined) {
@@ -827,8 +1017,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     { name: "Recent projects", description: "switch to another project", value: 3 },
     { name: "Refresh changes", description: "re-scan the working tree", value: 4 },
     { name: "Change review source", description: "staged, branch, or a commit", value: 5 },
-    { name: "Review summary", description: "reviewed, asked, highlighted", value: 6 },
-    { name: "Next unreviewed file", description: "jump to the next one", value: 7 },
+    { name: "Review summary", description: "approved, asked, highlighted", value: 6 },
+    { name: "Next unapproved file", description: "jump to the next one", value: 7 },
     { name: "Help", description: "keys and commands", value: 8 },
     { name: "Quit", description: "exit chert", value: 9 },
   ])
@@ -874,6 +1064,9 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       setStatus("Still thinking about your last question.")
       return
     }
+    // The answer band lives on the review screen; a follow-up asked from the
+    // done screen goes back there so the answer is visible.
+    if (view() === "done") setView("review")
     const cur = file()?.path
     if (cur) markAsked(cur)
     setAction(1)
@@ -1081,7 +1274,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         pickerOpen() ||
         (commandQuery() !== null && filteredCommands().length > 0) ||
         (themeInput() !== null && themeSuggestions().length > 0),
-      actionCount: () => ACTION_ITEMS.length,
+      actionCount: () => actionLabels().length,
 
       reviewPickerOpen,
       setReviewPickerOpen,
@@ -1117,6 +1310,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       setProjectsIndex,
       view,
       setStatus,
+      backToReview,
       alertOpen: () => alert() !== null,
       dismissAlert,
       hasProject,
@@ -1188,16 +1382,16 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           const hlYours = highlights().filter((h) => h.by === "you").length
           const hlAi = highlights().filter((h) => h.by === "ai").length
           showNotice(
-            `Reviewed ${reviewedCount()} of ${files()?.length ?? 0} files. Asked about ${asked}. Highlights: ${hlYours} yours, ${hlAi} from the AI.`,
+            `Approved ${approvedTotal()} of ${files()?.length ?? 0} files. Asked about ${asked}. Highlights: ${hlYours} yours, ${hlAi} from the AI.`,
           )
         }
         return
-      case 7: // Next unreviewed file
+      case 7: // Next unapproved file
         setMenuOpen(false)
         {
-          const unrev = (files() ?? []).find((f) => !isFileApproved(f.path))
-          if (unrev) {
-            selectFile((files() ?? []).indexOf(unrev))
+          const next = (files() ?? []).find((f) => !isFileApproved(f.path))
+          if (next) {
+            selectFile((files() ?? []).indexOf(next))
           }
         }
         return
@@ -1241,13 +1435,16 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   }
 
   function handleDoneSelection(i: number): void {
-    const skipped = (files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").map((f) => f.path)
-    // options: 0 go back over skipped, 1 refresh, 2 pick another, 3 quit
+    const passed = (files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").map((f) => f.path)
+    // options: 4 back to files, 0 pass-overs, 1 refresh, 2 pick another, 3 quit
+    if (i === 4) {
+      backToReview()
+      return
+    }
     if (i === 0) {
-      if (skipped.length === 0) return
-      setQueue(skipped)
+      if (passed.length === 0) return
       setView("review")
-      if (skipped.length > 0) goToFile(skipped[0])
+      goToFile(passed[0])
       return
     }
     if (i === 1) {
@@ -1267,11 +1464,10 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   }
 
   function doneOptions(): SelectOption[] {
-    const skippedCount = (files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length
-    const total = files()?.length ?? 0
-    const opts: SelectOption[] = []
-    if (skippedCount > 0)
-      opts.push({ name: `Go back over the ${skippedCount} skipped files`, description: "", value: 0 })
+    const passedCount = (files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length
+    const opts: SelectOption[] = [{ name: "Back to the files", description: "", value: 4 }]
+    if (passedCount > 0)
+      opts.push({ name: `Go back over the ${passedCount} passed files`, description: "", value: 0 })
     opts.push({ name: "Refresh (check for new changes)", description: "", value: 1 })
     opts.push({ name: "Pick another project", description: "", value: 2 })
     opts.push({ name: "Quit", description: "", value: 3 })
@@ -1292,25 +1488,37 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     }
   }
 
+  /** Approval state as the footer needs it, with the version read kept reactive. */
+  function currentApproved(): boolean {
+    approvalsVersion()
+    const f = file()
+    return f !== undefined && isFileApproved(f.path)
+  }
+
   function footerHints(): string {
     const hasText = inputValue() !== ""
+    const verb = currentApproved() ? "unapprove" : "approve"
     if (suggestionWindow().show) {
       return pickerOpen()
         ? "↑↓ choose · Enter run · Esc close · Ctrl+C quit"
         : "↑↓ choose · Enter run · Esc clear · Ctrl+C quit"
     }
     if (hasText) return "Enter send · Esc clear · Ctrl+C quit"
-    if (alert() !== null) return "Esc dismiss · Ctrl+C quit"
+    if (alert() !== null) {
+      return view() === "review" && hasProject()
+        ? `Space ${verb} · Esc dismiss · Ctrl+C quit`
+        : "Esc dismiss · Ctrl+C quit"
+    }
     if (menuOpen()) return "↑↓ choose · Enter go · Esc close · Ctrl+C quit"
     if (reviewPickerOpen()) return "↑↓ choose · Enter review · Esc close · Ctrl+C quit"
     if (projectsOpen()) return "↑↓ choose · Enter open · Esc close · Ctrl+C quit"
     if (view() === "tree") return "↑↓ move · Enter open · Esc menu · Ctrl+C quit"
     if (view() === "log") return "Esc menu · Ctrl+C quit"
-    if (view() === "done") return "↑↓ choose · Enter go · Ctrl+C quit"
+    if (view() === "done") return "↑↓ choose · Enter go · Esc files · Ctrl+C quit"
     if (!hasProject()) return "↑↓ choose · Enter open · /cd <path> · Esc menu · Ctrl+C quit"
-    if (answerOpen() && answerFile() === (file()?.path ?? ""))
-      return "↑↓ file · PgUp/PgDn answer · Esc menu · Ctrl+C quit"
-    return "↑↓ file · Space approve · Esc menu · Ctrl+C quit"
+    if (file() === undefined) return "Esc menu · Ctrl+C quit"
+    const scroll = answerShowing() ? " · PgUp/PgDn answer" : ""
+    return `↑↓ file · Space ${verb}${scroll} · Esc menu · Ctrl+C quit`
   }
 
   const showActionBar = createMemo(
@@ -1324,7 +1532,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
 
   /** Width the hints may use before the status and the action buttons. */
   const footerHintsBudget = createMemo(() => {
-    const actions = showActionBar() ? ACTION_ITEMS.reduce((n, label) => n + label.length + 2, 0) : 0
+    const actions = showActionBar() ? actionLabels().reduce((n, label) => n + label.length + 2, 0) : 0
     const statusWidth = !busy() && status() !== "" ? Math.min(status().length + 3, 41) : 0
     return Math.max(16, dims().width - 2 - actions - statusWidth)
   })
@@ -1466,7 +1674,17 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     setAgentHeight(Math.max(3, Math.min(requested, max)))
   }
 
-  const reviewedCount = createMemo(approvedCount)
+  const approvedTotal = createMemo(approvedCount)
+
+  const reviewTally = createMemo(() => {
+    const list = files() ?? []
+    return {
+      total: list.length,
+      approved: approvedTotal(),
+      asked: list.filter((f) => fileMemory().get(f.path) === "asked").length,
+      passed: list.filter((f) => fileMemory().get(f.path) === "passed").length,
+    }
+  })
 
   const overlayRows = createMemo(() => Math.max(3, Math.min(10, dims().height - 14)))
 
@@ -1498,7 +1716,9 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS().bg}>
       <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={COLORS().dim} attributes={ATTR.dim}>
-          {hasProject() && view() === "review" ? sourceLabel() : " "}
+          {hasProject() && (view() === "review" || view() === "done")
+            ? `${sourceLabel()}${walkActive() ? " · walk" : ""}`
+            : " "}
         </text>
         <box flexGrow={1} />
         <text fg={COLORS().purpleBright} attributes={ATTR.dim}>
@@ -1731,12 +1951,9 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         {/* Done view */}
         <box flexGrow={1} flexDirection="column" paddingLeft={1}>
           <text fg={COLORS().bright}>All done.</text>
-          <text
-            fg={COLORS().dim}
-          >{` You looked at ${files()?.length ?? 0} files:  asked about ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "asked").length},  skipped ${(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length} without asking.`}</text>
-          <Show when={(files() ?? []).filter((f) => fileMemory().get(f.path) === "passed").length === 0}>
-            <text fg={COLORS().dim}>You asked about every file.</text>
-          </Show>
+          <text fg={COLORS().dim}>
+            {` ${reviewTally().approved} of ${reviewTally().total} approved · ${reviewTally().asked} asked about · ${reviewTally().passed} passed`}
+          </text>
           <Show when={walkSession() !== null}>
             <text fg={COLORS().dim}>
               {`Review session ${walkSession()}. Your notes are yours; chert never writes into the original session.`}
@@ -1781,12 +1998,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
               {"─".repeat(Math.max(0, dims().width - 2))}
             </text>
           </box>
-          <text fg={COLORS().dim}>
-            {answerOpen() && answerFile() === (file()?.path ?? "")
-              ? `You asked: ${truncateEnd(lastQuestion(), 50)}  \u00b7  ${activeLabel()}`
-              : walkSession() !== null
-                ? "Ask about this file — the agent has the author's context."
-                : "Ask about this file."}
+          <text height={1} flexShrink={0} fg={COLORS().dim}>
+            {bandLabel()}
           </text>
           <Show when={answerShowing()}>
             <scrollbox
@@ -1796,9 +2009,9 @@ export function ReviewApp(props: ReviewAppProps = {}) {
             >
               <text
                 wrapMode="word"
-                fg={busy() ? COLORS().dim : answerIsError() ? COLORS().danger : COLORS().text}
+                fg={bandBusy() ? COLORS().dim : answerIsError() ? COLORS().danger : COLORS().text}
               >
-                {busy() ? status() : lastAnswer()}
+                {bandBody()}
               </text>
             </scrollbox>
           </Show>
@@ -1848,9 +2061,11 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           textColor={COLORS().bright}
           focusedTextColor={COLORS().bright}
           placeholder={
-            hasProject()
-              ? "ask a question, or type / for commands"
-              : "open a project with /cd <path>, or press Esc"
+            !hasProject()
+              ? "open a project with /cd <path>, or press Esc"
+              : view() === "done"
+                ? "ask a follow-up about this review, or choose what next"
+                : "ask a question, or type / for commands"
           }
           placeholderColor={COLORS().dim}
           onInput={(value: string) => setInputValue(value)}
@@ -1869,7 +2084,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
           </text>
         </Show>
         <Show when={showActionBar()}>
-          <For each={ACTION_ITEMS}>
+          <For each={actionLabels()}>
             {(label, i) => (
               <text
                 fg={i() === action() ? COLORS().bg : COLORS().dim}

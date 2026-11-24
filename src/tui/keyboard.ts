@@ -72,6 +72,8 @@ export interface KeyboardContext {
   setProjectsIndex(update: number | ((index: number) => number)): void
   view(): MainView
   setStatus(text: string): void
+  /** The done screen's Esc: return to the files without ending the walk. */
+  backToReview(): void
   /** An error or notice banner is showing; Esc dismisses it. */
   alertOpen(): boolean
   dismissAlert(): void
@@ -174,6 +176,11 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
     }
     if (ctx.alertOpen()) {
       ctx.dismissAlert()
+      return
+    }
+    if (ctx.view() === "done") {
+      key.preventDefault()
+      ctx.backToReview()
       return
     }
     if (ctx.view() === "review") {

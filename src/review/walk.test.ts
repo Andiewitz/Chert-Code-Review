@@ -65,6 +65,7 @@ interface Recorded {
   plans: string[]
   files: { dropped: number; concerns: number; highlights: number }[]
   asks: string[]
+  askContexts: string[]
 }
 
 function setup(options: { answer?: (request: string, call: number) => string; beforeAsk?: (call: number) => void } = {}) {
@@ -74,7 +75,7 @@ function setup(options: { answer?: (request: string, call: number) => string; be
       ? createFakeHarness()
       : createFakeHarness(options)
   const state: ReviewState = emptyState()
-  const recorded: Recorded = { errors: [], statuses: [], plans: [], files: [], asks: [] }
+  const recorded: Recorded = { errors: [], statuses: [], plans: [], files: [], asks: [], askContexts: [] }
   const walk = createWalk({
     harness,
     projectRoot: root,
@@ -95,7 +96,10 @@ function setup(options: { answer?: (request: string, call: number) => string; be
           concerns: result.analysis.concerns.length,
           highlights: result.highlights.length,
         }),
-      ask: (answer, highlights) => recorded.asks.push(`${answer.text}|${highlights.length}`),
+      ask: (answer, highlights, question, path) => {
+        recorded.asks.push(`${answer.text}|${highlights.length}`)
+        recorded.askContexts.push(`${question}|${path ?? ""}`)
+      },
     },
   })
   return { root, harness, state, walk, recorded }
@@ -188,6 +192,8 @@ describe("walk files", () => {
     expect(first?.analysis.assumptions).toEqual(["b is unused"])
     expect(recorded.files[0]).toEqual({ dropped: 1, concerns: 1, highlights: 1 })
     expect(first?.highlights[0]).toMatchObject({ path: "a.ts", start: 2, end: 2, level: "high", note: "check the default" })
+    const fileCall = harness.calls.find((call) => call.kind === "ask" && call.request?.includes("· file"))
+    expect(fileCall?.request).toContain("Change overview: renames b")
 
     const asksBefore = harness.calls.filter((call) => call.kind === "ask").length
     await walk.analyze("a.ts")
@@ -207,6 +213,15 @@ describe("walk files", () => {
     expect(harness.calls.filter((call) => call.kind === "ask")).toHaveLength(asksBefore)
   })
 
+  test("prefetch warms a file without claiming the screen's reading status", async () => {
+    const { walk, recorded } = setup({ answer: answerByKind({ plan: planAnswer(["a.ts"]), file: fileAnswer() }) })
+    await walk.start()
+    recorded.statuses.length = 0
+    walk.prefetch("a.ts")
+    await walk.ask("is this safe?", "a.ts")
+    expect(recorded.statuses.some((text) => text.startsWith("Reading"))).toBe(false)
+  })
+
   test("reports an answer whose anchors do not match the diff", async () => {
     const { walk, recorded } = setup({
       answer: answerByKind({
@@ -216,9 +231,10 @@ describe("walk files", () => {
       }),
     })
     await walk.start()
-    const answer = await walk.ask("why?")
+    const answer = await walk.ask("why?", "a.ts")
     expect(answer?.text).toBe("look here")
     expect(recorded.asks).toEqual(["look here|0"])
+    expect(recorded.askContexts).toEqual(["why?|a.ts"])
   })
 })
 

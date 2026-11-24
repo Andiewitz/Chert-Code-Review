@@ -31,7 +31,8 @@ export interface WalkCallbacks {
   status(text: string): void
   plan(plan: PlanResponse): void
   file(result: WalkFileResult): void
-  ask(answer: AskResponse, highlights: Highlight[]): void
+  /** The question and path are echoed so the UI can keep the answer with its file. */
+  ask(answer: AskResponse, highlights: Highlight[], question: string, path: string | undefined): void
   /** A failure the human must see; the walk stays usable. */
   error(message: string): void
 }
@@ -146,6 +147,8 @@ interface Context {
   session: ReviewSession | null
   guardTripped: string | null
   prefetching: string | null
+  /** The plan's overview, repeated with every file so the story stays joined. */
+  overview: string
   /** Each call waits for the previous one: a session is one conversation. */
   chain: Promise<unknown>
 }
@@ -250,6 +253,7 @@ async function startWalk(context: Context): Promise<void> {
       return
     }
     const plan: PlanResponse = { overview: result.value.overview, order: planOrder(result.value.order, files) }
+    context.overview = plan.overview
     callbacks.plan(plan)
     saveProgress(context, plan)
   } catch (error) {
@@ -269,7 +273,6 @@ async function analyzeInner(context: Context, path: string): Promise<WalkFileRes
   const cached = cachedResult(context, file, rows, patch)
   if (cached !== null) return cached
 
-  callbacks.status(`Reading ${path}…`)
   const result = await guarded(context, (live) =>
     askValidated(
       live,
@@ -279,12 +282,12 @@ async function analyzeInner(context: Context, path: string): Promise<WalkFileRes
         additions: file.additions,
         deletions: file.deletions,
         rows,
+        overview: context.overview === "" ? undefined : context.overview,
       }),
       "file",
       validateFile,
     ),
   )
-  callbacks.status("")
   if (context.guardTripped !== null) return null
   if (result.value === null) {
     callbacks.error(`${path}: ${result.errors.join("; ")}`)
@@ -340,7 +343,7 @@ async function askWalk(context: Context, question: string, path?: string, select
       return null
     }
     const anchors = rows === undefined ? [] : highlightsForAnchors(rows, path ?? "", result.value.anchors, result.value.text)
-    callbacks.ask(result.value, anchors)
+    callbacks.ask(result.value, anchors, question, path)
     return result.value
   } catch (error) {
     callbacks.error(messageOf(error))
@@ -355,6 +358,7 @@ export function createWalk(options: WalkOptions): Walk {
     session: null,
     guardTripped: null,
     prefetching: null,
+    overview: "",
     chain: Promise.resolve(),
   }
   return {

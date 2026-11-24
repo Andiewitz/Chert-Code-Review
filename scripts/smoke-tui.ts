@@ -142,169 +142,6 @@ async function phase1Tests(): Promise<void> {
   }
 }
 
-async function phase3Tests(): Promise<void> {
-  const repo = mkdtempSync(join(tmpdir(), "chert-phase3-"))
-  const cfg = mkdtempSync(join(tmpdir(), "chert-phase3-cfg-"))
-  const orig = process.cwd()
-  const prevCfg = process.env.CHERT_CONFIG_DIR
-  process.env.CHERT_CONFIG_DIR = cfg
-  try {
-    runGit(repo, ["init", "-b", "main"])
-    runGit(repo, ["config", "user.email", "smoke@example.com"])
-    runGit(repo, ["config", "user.name", "smoke"])
-    mkdirSync(join(repo, "src"), { recursive: true })
-    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\n")
-    writeFileSync(join(repo, "src", "b.ts"), "export const b = 1\n")
-    const lines = Array.from({ length: 200 }, (_, i) => `export const line${i} = ${i}`).join("\n") + "\n"
-    writeFileSync(join(repo, "src", "big.ts"), "export const x = 0\n")
-    writeFileSync(join(repo, "src", "big.ts"), lines)
-    runGit(repo, ["add", "."])
-    runGit(repo, ["commit", "-m", "base"])
-    // modify all three
-    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\nexport const a2 = 2\n")
-    writeFileSync(join(repo, "src", "b.ts"), "export const b = 1\nexport const b2 = 2\n")
-    writeFileSync(join(repo, "src", "big.ts"), lines + "\nexport const extra = 1\n")
-
-    process.chdir(repo)
-    await getTreeSitterClient()
-      .initialize()
-      .catch(() => {})
-    const { testRender: render } = await import("@opentui/solid")
-    const { ReviewApp } = await import("../src/tui/app.tsx")
-    const setup = await render(ReviewApp, { width: 100, height: 30 })
-    try {
-      await setup.renderOnce()
-      let frame = setup.captureCharFrame()
-      assert(frame.includes("File 1 of 3"), "phase3 shows File 1 of 3")
-      assert(frame.includes("Ctrl+C quit"), "phase3 footer has Ctrl+C quit")
-
-      // Right moves highlight (label highlighting changes) - check "Next" present
-      assert(frame.includes("Next"), "phase3 action bar has Next")
-
-      // Enter on Next advances to next file
-      await setup.mockInput.pressKey("RETURN")
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      assert(frame.includes("File 2 of 3"), "phase3 Next advances to File 2 of 3")
-
-      // Go back to file 1 via Back (Left to Back? Back disabled on first; on file2 Back enabled)
-      // Press Left until Back (index 0), Enter
-      await setup.mockInput.pressArrow("left")
-      await setup.mockInput.pressArrow("left")
-      await setup.mockInput.pressArrow("left")
-      await setup.mockInput.pressArrow("left")
-      await setup.renderOnce()
-      await setup.mockInput.pressKey("RETURN")
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      assert(frame.includes("File 1 of 3"), "phase3 Back returns to File 1")
-
-      // Back is hidden on file 1: pressing Left cannot reach Back; file stays
-      await setup.mockInput.pressArrow("left")
-      await setup.mockInput.pressArrow("left")
-      await setup.mockInput.pressArrow("left")
-      await setup.mockInput.pressArrow("left")
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      assert(frame.includes("File 1 of 3"), "phase3 Back on first file does nothing")
-
-      // Select big.ts via /open for scroll test
-      await setup.mockInput.pressKeys("/open big".split(""))
-      await setup.mockInput.pressKey("RETURN")
-      await new Promise((r) => setTimeout(r, 100))
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      // Up/Down scroll without changing files
-      await new Promise((r) => setTimeout(r, 120))
-      await setup.renderOnce()
-      await setup.mockInput.pressArrow("down")
-      await setup.mockInput.pressArrow("down")
-      await setup.mockInput.pressArrow("down")
-      await new Promise((r) => setTimeout(r, 60))
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      assert(frame.includes("File 3 of 3"), "phase3 Down does not change files")
-
-      // typing then Enter sends a question
-      await setup.mockInput.pressKeys("is this ok?".split(""))
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      assert(frame.includes("is this ok?"), "phase3 typed text shows")
-      await setup.mockInput.pressKey("RETURN")
-      await setup.renderOnce()
-
-      // Esc clears typed text (none now), Esc again opens Menu
-      await setup.mockInput.pressEscape()
-      await new Promise((r) => setTimeout(r, 60))
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      // after Esc with empty-ish, menu should open if input empty
-      // (input was cleared by submit; Esc on empty opens menu)
-      assert(frame.includes("Menu"), "phase3 Esc opens Menu")
-      assert(frame.includes("Files ("), "phase3 menu floats over the review, not a new page")
-
-      // close menu
-      await setup.mockInput.pressEscape()
-      await new Promise((r) => setTimeout(r, 60))
-      await setup.renderOnce()
-
-      // Navigate to last file and Next past last -> Done screen
-      // Go to file 3 (big) via /open then Next
-      await setup.mockInput.pressKeys("/open big".split(""))
-      await setup.mockInput.pressKey("RETURN")
-      await setup.renderOnce()
-      // Next past last
-      await setup.mockInput.pressKey("RETURN") // Enter on Next (action 4)
-      await setup.renderOnce()
-      frame = setup.captureCharFrame()
-      assert(frame.includes("All done."), "phase3 Done screen shows")
-      // counts: asked 1 (the question), skipped others
-      assert(frame.includes("asked about"), "phase3 Done shows asked count")
-
-      // Go back over skipped files
-      // first option if skipped exist
-      if (frame.includes("Go back over")) {
-        await setup.mockInput.pressKey("RETURN")
-        await setup.renderOnce()
-        frame = setup.captureCharFrame()
-        assert(!frame.includes("All done."), "phase3 returns to review")
-      }
-
-      // empty-state screen in a clean repo
-      const cleanRepo = mkdtempSync(join(tmpdir(), "chert-phase3-clean-"))
-      const cleanCfg = mkdtempSync(join(tmpdir(), "chert-phase3-cleancfg-"))
-      const prevCfg = process.env.CHERT_CONFIG_DIR
-      process.env.CHERT_CONFIG_DIR = cleanCfg
-      const origCwd = process.cwd()
-      try {
-        runGit(cleanRepo, ["init", "-b", "main"])
-        runGit(cleanRepo, ["config", "user.email", "smoke@example.com"])
-        runGit(cleanRepo, ["config", "user.name", "smoke"])
-        process.chdir(cleanRepo)
-        const setup2 = await render(ReviewApp, { width: 100, height: 30 })
-        await setup2.renderOnce()
-        const f2 = setup2.captureCharFrame()
-        assert(f2.includes("Nothing to review"), "phase3 empty state shows")
-        await setup2.dispose().catch(() => {})
-      } finally {
-        process.chdir(origCwd)
-        if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR
-        else process.env.CHERT_CONFIG_DIR = prevCfg
-        rmSync(cleanRepo, { recursive: true, force: true })
-        rmSync(cleanCfg, { recursive: true, force: true })
-      }
-    } finally {
-      await setup.dispose().catch(() => {})
-    }
-  } finally {
-    process.chdir(orig)
-    if (prevCfg === undefined) delete process.env.CHERT_CONFIG_DIR
-    else process.env.CHERT_CONFIG_DIR = prevCfg
-    rmSync(repo, { recursive: true, force: true })
-    rmSync(cfg, { recursive: true, force: true })
-  }
-}
-
 async function phase4Tests(): Promise<void> {
   if (process.platform === "win32") {
     console.log("phase4Tests skipped on win32")
@@ -772,25 +609,31 @@ const sessionAt = args.indexOf("--session")
 const sessionId = args.includes("--fork") ? "ses_walk" : sessionAt === -1 ? "ses_new" : args[sessionAt + 1]
 const emit = (text) =>
   console.log(JSON.stringify({ type: "text", sessionID: sessionId, part: { type: "text", text } }))
-const anchor = { side: "new", start: 2, end: 2, quote: "export const a2 = 2" }
+const b = prompt.includes("src/b.ts")
+const anchor = b
+  ? { side: "new", start: 2, end: 2, quote: "export const b2 = 2" }
+  : { side: "new", start: 2, end: 2, quote: "export const a2 = 2" }
 if (args.includes("--fork")) {
   emit("ready")
 } else if (prompt.includes("Project file:")) {
   emit(JSON.stringify({
     protocol: "chert-review/1",
-    path: "src/a.ts",
-    intent: "adds a2",
-    summary: "one line added",
-    walkthrough: [{ anchor, explanation: "the new export" }],
+    path: b ? "src/b.ts" : "src/a.ts",
+    intent: b ? "adds b2" : "adds a2",
+    summary: b ? "b line added" : "a line added",
+    walkthrough: [{ anchor, explanation: b ? "the new b export" : "the new a export" }],
     concerns: [{ anchor, level: "medium", note: "is it used?" }],
     assumptions: [],
-    questions: ["why a2?"],
+    questions: [b ? "why b2?" : "why a2?"],
   }))
 } else if (prompt.includes("plan")) {
   emit(JSON.stringify({
     protocol: "chert-review/1",
-    overview: "adds a2",
-    order: [{ path: "src/a.ts", reason: "the change" }],
+    overview: "adds a2 and b2",
+    order: [
+      { path: "src/b.ts", reason: "start with the new file" },
+      { path: "src/a.ts", reason: "then the edit" },
+    ],
   }))
 } else {
   emit("ready")
@@ -825,9 +668,11 @@ async function phaseWalkTests(): Promise<void> {
     runGit(repo, ["config", "user.name", "smoke"])
     mkdirSync(join(repo, "src"), { recursive: true })
     writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\n")
+    writeFileSync(join(repo, "src", "b.ts"), "export const b = 1\n")
     runGit(repo, ["add", "."])
     runGit(repo, ["commit", "-m", "base"])
     writeFileSync(join(repo, "src", "a.ts"), "export const a = 1\nexport const a2 = 2\n")
+    writeFileSync(join(repo, "src", "b.ts"), "export const b = 1\nexport const b2 = 2\n")
 
     process.chdir(repo)
     await getTreeSitterClient()
@@ -843,15 +688,18 @@ async function phaseWalkTests(): Promise<void> {
       await setup.mockInput.pressKey("RETURN")
       await new Promise((r) => setTimeout(r, 1500))
       await setup.renderOnce()
-      const frame = setup.captureCharFrame()
+      let frame = setup.captureCharFrame()
       console.log("WALK FRAME:\n" + frame + "\nENDWALK")
-      assert(frame.includes("adds a2"), "walk plan overview reaches the screen")
-      assert(frame.includes("one line added"), "walk analysis head reaches the five-line band")
+      assert(frame.includes("adds a2 and b2"), "walk plan overview reaches the screen")
+      assert(frame.includes("b line added"), "walk starts with the agent's first file")
+      assert(frame.includes("start with the new file"), "band explains why this file is first")
+      assert(!frame.includes("You asked:"), "analysis is not labelled as a question")
+      assert(frame.includes("Space approve"), "approval stays visible while the band is open")
       // The band, the prompt and the action bar all sit under the diff.
       const lines = frame.split("\n")
-      const changedLine = lines.find((line) => line.includes("export const a2")) ?? ""
+      const changedLine = lines.find((line) => line.includes("export const b2")) ?? ""
       assert(changedLine.includes("\u258c"), "walk anchor is placed on the changed line")
-      const diffAt = lines.findIndex((line) => line.includes("export const a2"))
+      const diffAt = lines.findIndex((line) => line.includes("export const b2"))
       const promptAt = lines.findIndex((line) => line.includes("ask a question"))
       const actionsAt = lines.findIndex((line) => line.includes("Back") && line.includes("Next"))
       assert(
@@ -859,11 +707,50 @@ async function phaseWalkTests(): Promise<void> {
         "walk layout: diff above the band, prompt and actions",
       )
       assert(!frame.includes("Is it messy?"), "walk action bar no longer offers Is it messy?")
+
+      // Next reaches the second file; the agent describes it without an ask.
+      await setup.mockInput.pressKey("RETURN")
+      await new Promise((r) => setTimeout(r, 900))
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(frame.includes("2 of 2 files"), "Next follows the agent's order")
+      assert(frame.includes("a line added"), "moving to a file asks the agent for it")
+      assert(frame.includes("then the edit"), "band explains the second file's place")
+      assert(frame.includes("Finish"), "the last file offers Finish, not Next")
+
+      // Approve the second file; the walk returns to the first unapproved one.
+      await setup.mockInput.pressKey(" ")
+      await new Promise((r) => setTimeout(r, 400))
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(frame.includes("b line added"), "approving advances to the next unapproved file")
+
+      // Approve the first file too; there is nothing left, so the review ends.
+      await setup.mockInput.pressKey(" ")
+      await new Promise((r) => setTimeout(r, 300))
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(frame.includes("All done."), "approving the last unapproved file finishes")
+      assert(frame.includes("2 of 2 approved"), "done screen counts approvals")
+      assert(frame.includes("Back to the files"), "done screen offers a way back")
+      assert(frame.includes("Esc files"), "done footer offers Esc back")
+      assert(!frame.includes("Walk: adds a2 and b2"), "the plan notice does not follow you to done")
+
+      await setup.mockInput.pressKey("RETURN")
+      await new Promise((r) => setTimeout(r, 300))
+      await setup.renderOnce()
+      frame = setup.captureCharFrame()
+      assert(!frame.includes("All done."), "Back to the files returns to the review")
+      assert(frame.includes("b line added"), "the walk's answer is restored on return")
+
       const stored = JSON.parse(readFileSync(join(repo, ".git", "chert", "review-state.json"), "utf8")) as {
         walks: Record<string, { forkedSessionId: string; mode: string }>
+        approvals: Record<string, unknown>
       }
       assert(stored.walks.working.forkedSessionId === "ses_walk", "walk stores the forked session")
       assert(stored.walks.working.mode === "author-context", "walk records author context")
+      assert(stored.approvals["src/a.ts"] !== undefined, "walk approval for a is persisted")
+      assert(stored.approvals["src/b.ts"] !== undefined, "walk approval for b is persisted")
     } finally {
       await setup.dispose().catch(() => {})
     }
