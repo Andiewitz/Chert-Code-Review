@@ -57,14 +57,14 @@ export const COMMAND_DEFS: CommandDef[] = [
   },
   {
     name: "connect",
-    usage: "/connect [provider [key]]",
-    description: "connector status / save a provider key",
+    usage: "/connect [connector [key|model]]",
+    description: "connector status / save a key / pin an opencode model",
     takesArg: true,
   },
   {
     name: "disconnect",
-    usage: "/disconnect <provider>",
-    description: "remove a saved provider key",
+    usage: "/disconnect <connector>",
+    description: "remove a saved key or an opencode model pin",
     takesArg: true,
   },
   {
@@ -73,7 +73,12 @@ export const COMMAND_DEFS: CommandDef[] = [
     description: "route plain-text prompts (opencode or a provider)",
     takesArg: true,
   },
-  { name: "models", usage: "/models [provider]", description: "list a provider's models", takesArg: true },
+  {
+    name: "models",
+    usage: "/models [connector] [filter]",
+    description: "list a provider's or opencode's models",
+    takesArg: true,
+  },
   { name: "themes", usage: "/themes [name]", description: "list or switch color theme", takesArg: true },
   { name: "quit", aliases: ["exit", "q"], usage: "/quit", description: "exit chert (Ctrl+C also works)" },
 ]
@@ -94,6 +99,7 @@ function buildHelpText(): string {
     "commands:",
     ...COMMAND_DEFS.map((c) => `  ${c.usage.padEnd(pad)}${c.description}`),
     "connectors: opencode (default) · openrouter · gemini · groq · nim",
+    "first run: /connect opencode <model> (try /models opencode to choose one).",
     "plain text (no /) goes to the active connector.",
   ].join("\n")
 }

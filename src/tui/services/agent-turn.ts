@@ -10,8 +10,16 @@ import { createOpencodeHarness } from "../../harness/opencode"
 import { MAX_AGENT_ANSWER_LINES } from "../../limits"
 import { tailLines } from "../../text"
 
-/** One adapter for the whole process, so detection is probed once. */
-const opencode = createOpencodeHarness()
+/** One adapter per model: the opencode CLI takes --model, and plain asks need it too. */
+const models = new Map<string, ReturnType<typeof createOpencodeHarness>>()
+function opencodeFor(model: string | undefined): ReturnType<typeof createOpencodeHarness> {
+  const key = model ?? ""
+  const found = models.get(key)
+  if (found !== undefined) return found
+  const made = createOpencodeHarness({ model })
+  models.set(key, made)
+  return made
+}
 
 export interface AgentTurnRequest {
   prompt: string
@@ -44,10 +52,16 @@ export async function runAgentTurn(request: AgentTurnRequest): Promise<AgentTurn
   const { connectorId } = request
 
   if (connectorId === "opencode") {
+    const opencode = opencodeFor(request.model)
     const detection = await opencode.detect()
     if (!detection.available) return failed(detection.reason ?? noAiConnectedMessage(PROVIDERS[0]))
-    const answer = await opencode.askOnce(request.projectRoot, request.prompt)
-    return { text: tailLines(answer.trim(), MAX_AGENT_ANSWER_LINES), isError: false }
+    try {
+      const answer = await opencode.askOnce(request.projectRoot, request.prompt)
+      return { text: tailLines(answer.trim(), MAX_AGENT_ANSWER_LINES), isError: false }
+    } catch (error) {
+      // A refused model already carries the fix; a harness failure is shown as-is.
+      return failed(error instanceof Error ? error.message : String(error))
+    }
   }
 
   const provider = findProvider(connectorId)

@@ -4,7 +4,7 @@
 //   3. drives the prompt and navigation with mock keyboard input, asserting
 //      rendered frames at each step
 // Run with: bun run scripts/smoke-tui.ts
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { tryOr } from "../src/best-effort"
@@ -39,7 +39,19 @@ function fakeOpencodeScript(parts: string[]): string {
   return [
     "#!/bin/sh",
     'if [ "$1" = "--version" ]; then echo "2.3.0"; exit 0; fi',
+    'if [ "$1" = "models" ]; then',
+    '  echo "openrouter/listed-but-broken"',
+    '  echo "opencode/big-pickle"',
+    '  echo "opencode/beam-free"',
+    "  exit 0",
+    "fi",
     'if [ "$1" = "run" ]; then',
+    '  case " $* " in',
+    '    *" --model openrouter/listed-but-broken "*)',
+    `      echo '{"type":"error","sessionID":"ses_fake","error":{"data":{"message":"provider is not authenticated"}}}'`,
+    "      exit 0",
+    "      ;;",
+    "  esac",
     "  sleep 1",
     ...events,
     "  exit 0",
@@ -775,6 +787,8 @@ async function main(): Promise<void> {
   // Connector key storage lives in a separate temp dir: inside the repo it
   // would show up in the project tree as an untracked directory.
   const cfgTmp = mkdtempSync(join(tmpdir(), "chert-cfg-"))
+  const binDir = mkdtempSync(join(tmpdir(), "chert-smoke-bin-"))
+  const prevPath = process.env.PATH
   let setup: Awaited<ReturnType<typeof testRender>> | undefined
   let ok = false
 
@@ -801,6 +815,11 @@ async function main(): Promise<void> {
     process.chdir(tmp)
     // Keep connector key storage hermetic without polluting the repo.
     process.env.CHERT_CONFIG_DIR = join(cfgTmp, "chert-config")
+    // Model listing and probes use this fake, not whatever is installed.
+    const opencode = join(binDir, "opencode")
+    writeFileSync(opencode, fakeOpencodeScript(["answer line 1"]))
+    chmodSync(opencode, 0o755)
+    process.env.PATH = binDir + ":" + (process.env.PATH ?? "")
 
     // Pre-initialize tree-sitter with visible diagnostics.
     const client = getTreeSitterClient()
@@ -937,12 +956,74 @@ async function main(): Promise<void> {
     frame = setup.captureCharFrame()
     assert(frame.includes("[ groq/llama-3.3-70b-versatile ]"), "/use switches the active connector")
 
-    // ...and back to the opencode CLI.
+    // ...and back to the opencode CLI, with no model pinned yet.
     await setup.mockInput.pressKeys("/use opencode".split(""))
     await setup.mockInput.pressKey("RETURN")
     await setup.renderOnce()
     frame = setup.captureCharFrame()
-    assert(frame.includes("[ opencode ]"), "/use opencode switches back")
+    assert(frame.includes("[ opencode/default ]"), "/use opencode switches back")
+
+    // /models opencode lists the built-in models first and suggests a pin.
+    await setup.mockInput.pressKeys("/models opencode".split(""))
+    await setup.mockInput.pressKey("RETURN")
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(
+      frame.includes("opencode/big-pickle") && frame.includes("opencode/beam-free"),
+      "/models opencode lists models",
+    )
+    assert(
+      frame.includes("pin one: /connect opencode opencode/beam-free"),
+      "/models opencode recommends a concrete pin",
+    )
+
+    // A listed model can still fail; the error names one that works and saves nothing.
+    await setup.mockInput.pressKeys("/connect opencode openrouter/listed-but-broken".split(""))
+    await setup.mockInput.pressKey("RETURN")
+    await new Promise((r) => setTimeout(r, 1500))
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(frame.includes("try /connect opencode opencode/beam-free"), "a failed pin suggests a usable model")
+    assert(frame.includes("[ opencode/default ]"), "a failed pin is not saved")
+
+    // A working model is verified once, saved, and shown in the header.
+    await setup.mockInput.pressKeys("/connect opencode opencode/big-pickle".split(""))
+    await setup.mockInput.pressKey("RETURN")
+    await new Promise((r) => setTimeout(r, 1500))
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(frame.includes("saved opencode model opencode/big-pickle"), "a verified model is saved")
+    assert(frame.includes("[ opencode/big-pickle ]"), "the header shows the pinned model")
+    {
+      const stored = JSON.parse(readFileSync(join(cfgTmp, "chert-config", "connectors.json"), "utf8")) as {
+        active?: { connector?: string; model?: string }
+        models?: Record<string, string>
+      }
+      assert(stored.models?.opencode === "opencode/big-pickle", "the pin is persisted per connector")
+      assert(
+        stored.active?.connector === "opencode" && stored.active.model === "opencode/big-pickle",
+        "the active connector carries the pin",
+      )
+    }
+
+    // Switching away and using a bare /connect opencode brings the pin back.
+    await setup.mockInput.pressKeys("/use groq".split(""))
+    await setup.mockInput.pressKey("RETURN")
+    await setup.renderOnce()
+    await setup.mockInput.pressKeys("/connect opencode".split(""))
+    await setup.mockInput.pressKey("RETURN")
+    await new Promise((r) => setTimeout(r, 100))
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(frame.includes("[ opencode/big-pickle ]"), "/connect opencode restores the saved pin")
+
+    // Disconnect clears it and the header falls back to the default.
+    await setup.mockInput.pressKeys("/disconnect opencode".split(""))
+    await setup.mockInput.pressKey("RETURN")
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(frame.includes("cleared the opencode model"), "/disconnect opencode clears the pin")
+    assert(frame.includes("[ opencode/default ]"), "the header falls back to opencode/default")
 
     // Tree view via /tree command.
     await setup.mockInput.pressKeys("/tree".split(""))
@@ -977,8 +1058,10 @@ async function main(): Promise<void> {
   } finally {
     if (setup) await setup.dispose().catch(() => {})
     process.chdir(originalCwd)
+    if (prevPath === undefined) delete process.env.PATH
+    else process.env.PATH = prevPath
     // Windows can transiently hold handles on freshly used directories.
-    for (const dir of [tmp, cfgTmp]) {
+    for (const dir of [tmp, cfgTmp, binDir]) {
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const removed = tryOr(() => {
           rmSync(dir, { recursive: true, force: true })

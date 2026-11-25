@@ -2,13 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import {
-  createOpencodeHarness,
-  parseEvents,
-  parseSessionList,
-  probeServer,
-  resolveServerUrl,
-} from "./opencode"
+import { createOpencodeHarness, parseEvents, parseSessionList } from "./opencode"
+import { MODEL_PROBE_PROMPT } from "./opencode-models"
+import { probeServer, resolveServerUrl } from "./opencode-server"
 import { OPENING_PROMPT } from "./types"
 
 const skip = process.platform === "win32"
@@ -32,7 +28,18 @@ if (args[0] === "session") {
 }
 const log = process.env.FAKE_LOG
 if (log) fs.appendFileSync(log, JSON.stringify(args) + "\\n")
+if (args[0] === "models") {
+  console.log("openrouter/broken-model")
+  console.log("opencode/big-pickle")
+  console.log("opencode/beam-free")
+  process.exit(0)
+}
 const prompt = args[args.length - 1]
+const modelArg = args.includes("--model") ? args[args.indexOf("--model") + 1] : null
+if (modelArg === "openrouter/broken-model") {
+  console.log(JSON.stringify({ type: "error", sessionID: "ses_broken", error: { data: { message: "provider not authenticated" } } }))
+  process.exit(0)
+}
 const sessionArg = args.includes("--session") ? args[args.indexOf("--session") + 1] : null
 const emit = (sessionID, text) =>
   console.log(JSON.stringify({ type: "text", timestamp: 1, sessionID, part: { type: "text", text } }))
@@ -281,6 +288,57 @@ describe("opencode harness", () => {
     expect(await harness().askOnce(process.cwd(), "hello")).toBe("answer:hello")
     expect(fake.calls()[0]).toContain("--archived")
     expect(fake.calls()[0]).toContain("plan")
+  })
+
+  test.skipIf(skip)("passes the pinned model to start, asks and plain prompts", async () => {
+    const adapter = harness({ model: "opencode/big-pickle" })
+    const session = await adapter.start({ projectRoot: process.cwd() })
+    await session.ask("first")
+    await adapter.askOnce(process.cwd(), "hello")
+
+    const calls = fake.calls()
+    expect(calls).toHaveLength(3)
+    for (const argv of calls) {
+      expect(argv[argv.indexOf("--model") + 1]).toBe("opencode/big-pickle")
+    }
+    expect(calls[0]).toContain(OPENING_PROMPT)
+    expect(calls[1]).toContain("first")
+    expect(calls[2]).toContain("--archived")
+  })
+
+  test.skipIf(skip)("lists models with the built-in ones first", () => {
+    expect(harness().listModels?.()).toEqual([
+      "opencode/big-pickle",
+      "opencode/beam-free",
+      "openrouter/broken-model",
+    ])
+  })
+
+  test.skipIf(skip)("probes a model with one real call", async () => {
+    const adapter = harness()
+    expect(await adapter.probeModel?.("opencode/big-pickle", process.cwd())).toBe(
+      `answer:${MODEL_PROBE_PROMPT}`,
+    )
+    const argv = fake.calls()[0]
+    expect(argv[argv.indexOf("--model") + 1]).toBe("opencode/big-pickle")
+    expect(argv[argv.length - 1]).toBe(MODEL_PROBE_PROMPT)
+    expect(argv).not.toContain("--archived")
+  })
+
+  test.skipIf(skip)("a rejected model names a concrete alternative", async () => {
+    const adapter = harness({ model: "openrouter/broken-model" })
+    await expect(adapter.askOnce(process.cwd(), "hello")).rejects.toThrow(
+      "try /connect opencode opencode/beam-free",
+    )
+    await expect(adapter.probeModel?.("openrouter/broken-model", process.cwd())).rejects.toThrow(
+      "try /connect opencode opencode/beam-free",
+    )
+  })
+
+  test.skipIf(skip)("a rejected model at start names a concrete alternative", async () => {
+    await expect(
+      harness({ model: "openrouter/broken-model" }).start({ projectRoot: process.cwd() }),
+    ).rejects.toThrow("try /connect opencode opencode/beam-free")
   })
 
   test.skipIf(skip)("reports a failing run and an error event", async () => {

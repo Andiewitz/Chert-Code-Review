@@ -16,6 +16,15 @@
 
 import { tryOr } from "../best-effort"
 import { MAX_HARNESS_SESSIONS } from "../limits"
+import { isRecord } from "./json"
+import {
+  MODEL_PROBE_PROMPT,
+  listOpencodeModels,
+  modelErrorHint,
+  recommendOpencodeModel,
+} from "./opencode-models"
+import { probeServer, resolveServerUrl } from "./opencode-server"
+import type { ServerHealth } from "./opencode-server"
 import { describeExit, probeVersion, runProcess } from "./process"
 import type { ProcessOptions } from "./process"
 import { OPENING_PROMPT } from "./types"
@@ -23,8 +32,6 @@ import type { HarnessAdapter, HarnessDetection, ReviewSession, SessionInfo, Star
 
 const DEFAULT_COMMAND = "opencode"
 const DEFAULT_TIMEOUT_MS = 120_000
-/** A health probe should answer or fail fast; it runs before every request. */
-const HEALTH_TIMEOUT_MS = 1_500
 /** The read-only agent: it denies `edit` (and `browser`) by opencode's config. */
 const READ_ONLY_AGENT = "plan"
 const DEFAULT_TITLE = "chert review"
@@ -36,10 +43,6 @@ export interface OpencodeEvents {
   text: string
   /** The first `error` event's message, if the run reported one. */
   error: string | null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 /** The message inside an opencode `error` event, whatever shape it used. */
@@ -57,6 +60,7 @@ export function parseEvents(stdout: string): OpencodeEvents {
   const texts: string[] = []
   let sessionId: string | null = null
   let error: string | null = null
+  let errorSession: string | null = null
   for (const line of stdout.split("\n")) {
     if (line.trim() === "") continue
     const event = tryOr(() => JSON.parse(line) as unknown, null)
@@ -69,9 +73,18 @@ export function parseEvents(stdout: string): OpencodeEvents {
     }
     if (event.type === "error" && error === null) {
       error = errorMessage(event)
+      if (typeof event.sessionID === "string" && event.sessionID !== "") errorSession = event.sessionID
     }
   }
-  return { sessionId, text: texts.join("\n"), error }
+  return { sessionId: errorSession ?? sessionId, text: texts.join("\n"), error }
+}
+
+/**
+ * An error event still carries the session opencode created, so the caller can
+ * close that session instead of leaving it to be listed later.
+ */
+function closeEventSession(session: ReviewSession): void {
+  session.close()
 }
 
 /** opencode reports `updated` in seconds, milliseconds, or an ISO string. */
@@ -114,43 +127,14 @@ export interface OpencodeHarnessOptions {
   /** The executable to call. Tests point this at a fake script. */
   command?: string
   timeoutMs?: number
+  /** Model to pin on every call, as `provider/model`. */
+  model?: string
   /** Explicit server to use. Defaults to CHERT_OPENCODE_SERVER; unset uses the background service. */
   serverUrl?: string
   /** Health probe, injectable so tests need no real server. */
   probe?: (url: string) => Promise<ServerHealth>
-}
-
-/** The server CHERT_OPENCODE_SERVER points at, or null for the background service. */
-export function resolveServerUrl(raw?: string): string | null {
-  const value = (raw ?? process.env.CHERT_OPENCODE_SERVER ?? "").trim()
-  if (value === "") return null
-  const withScheme = /^https?:\/\//i.test(value) ? value : `http://${value}`
-  return withScheme.replace(/\/+$/, "")
-}
-
-export interface ServerHealth {
-  ok: boolean
-  version: string | null
-}
-
-/**
- * Ask the server whether it is up. A refused or slow connection is "not up".
- * v2 serves its web UI for unknown paths, so a 2xx proves the server is there
- * even when the body is not the JSON a v1 server would return.
- */
-export async function probeServer(url: string, timeoutMs = HEALTH_TIMEOUT_MS): Promise<ServerHealth> {
-  try {
-    const response = await fetch(`${url}/global/health`, { signal: AbortSignal.timeout(timeoutMs) })
-    if (!response.ok) return { ok: false, version: null }
-    const body: unknown = await response.json().catch(() => null)
-    if (!isRecord(body)) return { ok: true, version: null }
-    return {
-      ok: body.healthy !== false,
-      version: typeof body.version === "string" ? body.version : null,
-    }
-  } catch {
-    return { ok: false, version: null }
-  }
+  /** A pinned model's one-shot check. Override in tests with a fake answer. */
+  probeModel?: (model: string, projectRoot: string) => Promise<string>
 }
 
 /**
@@ -193,10 +177,12 @@ function makeSession(
   base: () => string[],
   cwd: string,
   timeoutMs: number,
+  model?: string,
+  recommend?: () => string | undefined,
 ): ReviewSession {
   const controller = new AbortController()
   let closed = false
-  return {
+  const session: ReviewSession = {
     id,
     mode,
     async ask(request: string): Promise<string> {
@@ -205,7 +191,13 @@ function makeSession(
         timeoutMs,
         signal: controller.signal,
       })
-      return requireAnswer(events)
+      if (events.error !== null) {
+        closeEventSession(session)
+        throw new Error(
+          model === undefined ? events.error : modelErrorHint(model, events.error, recommend?.()),
+        )
+      }
+      return events.text
     },
     close(): void {
       if (closed) return
@@ -213,6 +205,7 @@ function makeSession(
       controller.abort()
     },
   }
+  return session
 }
 
 function listOpencodeSessions(command: string, projectRoot: string): SessionInfo[] {
@@ -235,25 +228,37 @@ async function startOpencode(
   base: () => string[],
   startOptions: StartOptions,
   timeoutMs: number,
+  model?: string,
+  recommend?: () => string | undefined,
 ): Promise<ReviewSession> {
   const argv = [...base(), "--title", startOptions.title ?? DEFAULT_TITLE]
   const forkOf = startOptions.baseSessionId
   if (forkOf !== undefined) argv.push("--session", forkOf, "--fork")
   argv.push(OPENING_PROMPT)
   const events = await runOnce(argv, { cwd: startOptions.projectRoot, timeoutMs })
+  if (events.error !== null) {
+    // The opening call created a session before it failed; close the one it named.
+    if (events.sessionId !== null) {
+      closeEventSession(
+        makeSession(events.sessionId, "fresh", base, startOptions.projectRoot, timeoutMs, model, recommend),
+      )
+    }
+    throw new Error(model === undefined ? events.error : modelErrorHint(model, events.error, recommend?.()))
+  }
   requireAnswer(events)
   const id = requireSessionId(events, argv)
   if (forkOf !== undefined && id === forkOf) {
     throw new Error("opencode did not fork; refusing to write into your original conversation")
   }
   const mode = forkOf === undefined ? "fresh" : "author-context"
-  return makeSession(id, mode, base, startOptions.projectRoot, timeoutMs)
+  return makeSession(id, mode, base, startOptions.projectRoot, timeoutMs, model, recommend)
 }
 
-/** `run`, the read-only agent and, when configured, the explicit server. */
-function makeBaseArgv(command: string, serverUrl: () => string | null): () => string[] {
+/** `run`, the read-only agent, the pinned model and the configured server. */
+function makeBaseArgv(command: string, serverUrl: () => string | null, model?: string): () => string[] {
   return () => {
     const argv = [command, "run", "--format", "json", "--agent", READ_ONLY_AGENT]
+    if (model !== undefined && model !== "") argv.push("--model", model)
     const server = serverUrl()
     if (server !== null) argv.push("--server", server)
     return argv
@@ -286,15 +291,76 @@ function makeDetect(
   }
 }
 
+/** The default probe: one real `run --model` call, whose session is closed. */
+function makeProbeModel(
+  command: string,
+  serverUrl: () => string | null,
+  base: () => string[],
+  timeoutMs: number,
+  recommend: (failed?: string) => string | undefined,
+  requireAvailable: () => Promise<void>,
+): (model: string, projectRoot: string) => Promise<string> {
+  return async (wanted, root) => {
+    await requireAvailable()
+    const argv = [command, "run", "--format", "json", "--agent", READ_ONLY_AGENT, "--model", wanted]
+    const server = serverUrl()
+    if (server !== null) argv.push("--server", server)
+    argv.push(MODEL_PROBE_PROMPT)
+    const events = await runOnce(argv, { cwd: root, timeoutMs })
+    if (events.error !== null) {
+      // A rejected probe still created a session; close it before reporting.
+      if (events.sessionId !== null) {
+        closeEventSession(makeSession(events.sessionId, "fresh", base, root, timeoutMs, wanted))
+      }
+      throw new Error(modelErrorHint(wanted, events.error, recommend(wanted)))
+    }
+    if (events.sessionId !== null) {
+      // The probe's session is never resumed, so it must not linger.
+      closeEventSession(
+        makeSession(events.sessionId, "fresh", base, root, timeoutMs, wanted, () => recommend(wanted)),
+      )
+    }
+    return events.text
+  }
+}
+
+/** One archived `run` for plain prompts; an error names a usable model. */
+function makeAskOnce(
+  base: () => string[],
+  timeoutMs: number,
+  model: string | undefined,
+  recommend: (failed?: string) => string | undefined,
+  requireAvailable: () => Promise<void>,
+): (projectRoot: string, request: string) => Promise<string> {
+  return async (projectRoot, request) => {
+    await requireAvailable()
+    // `--archived` keeps a plain prompt out of the user's visible session list.
+    const events = await runOnce([...base(), "--archived", request], { cwd: projectRoot, timeoutMs })
+    if (events.error !== null) {
+      throw new Error(modelErrorHint(model ?? "", events.error, recommend(model)))
+    }
+    return events.text
+  }
+}
+
 export function createOpencodeHarness(options: OpencodeHarnessOptions = {}): HarnessAdapter {
   const command = options.command ?? DEFAULT_COMMAND
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const model = options.model
   // Resolved per call: the adapter outlives the environment it was made in, and
   // CHERT_OPENCODE_SERVER is how a user points chert at their server.
   const serverUrl = (): string | null => resolveServerUrl(options.serverUrl)
   const probe = options.probe ?? probeServer
-  const baseArgv = makeBaseArgv(command, serverUrl)
+  const baseArgv = makeBaseArgv(command, serverUrl, model)
   const detect = makeDetect(command, serverUrl, probe)
+  const listModels = (): string[] => listOpencodeModels(command, serverUrl)
+  // Listing on an error is a little work, but it turns "try another model" into
+  // a command the user can run, and the failed model is never suggested.
+  const recommend = (failed?: string): string | undefined =>
+    recommendOpencodeModel(listModels(), failed ?? model)
+  const probeModel =
+    options.probeModel ?? makeProbeModel(command, serverUrl, baseArgv, timeoutMs, recommend, requireAvailable)
+  const askOnce = makeAskOnce(baseArgv, timeoutMs, model, recommend, requireAvailable)
 
   async function requireAvailable(): Promise<void> {
     const found = await detect()
@@ -308,17 +374,7 @@ export function createOpencodeHarness(options: OpencodeHarnessOptions = {}): Har
 
   async function start(startOptions: StartOptions): Promise<ReviewSession> {
     await requireAvailable()
-    return startOpencode(baseArgv, startOptions, timeoutMs)
-  }
-
-  async function askOnce(projectRoot: string, request: string): Promise<string> {
-    await requireAvailable()
-    // `--archived` keeps a plain prompt out of the user's visible session list.
-    const events = await runOnce([...baseArgv(), "--archived", request], {
-      cwd: projectRoot,
-      timeoutMs,
-    })
-    return requireAnswer(events)
+    return startOpencode(baseArgv, startOptions, timeoutMs, model, () => recommend())
   }
 
   return {
@@ -326,7 +382,9 @@ export function createOpencodeHarness(options: OpencodeHarnessOptions = {}): Har
     label: "opencode",
     detect,
     listSessions,
+    listModels,
     start,
     askOnce,
+    probeModel,
   }
 }

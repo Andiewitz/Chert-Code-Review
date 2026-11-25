@@ -58,4 +58,8 @@ export interface HarnessAdapter {
   start(options: StartOptions): Promise<ReviewSession>
   /** A single request that keeps no session, for plain prompts. */
   askOnce(projectRoot: string, request: string): Promise<string>
+  /** Ids this CLI can run, for pinning a model. Empty when unsupported. */
+  listModels?(): string[]
+  /** One real call with `model`, so a pinned model is checked before it is saved. */
+  probeModel?(model: string, projectRoot: string): Promise<string>
 }

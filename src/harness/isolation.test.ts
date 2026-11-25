@@ -22,7 +22,16 @@ describe("harness isolation", () => {
     const sources = readdirSync(import.meta.dir).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".test.ts"),
     )
-    expect(sources.sort()).toEqual(["claude.ts", "fake.ts", "opencode.ts", "process.ts", "types.ts"])
+    expect(sources.sort()).toEqual([
+      "claude.ts",
+      "fake.ts",
+      "json.ts",
+      "opencode-models.ts",
+      "opencode-server.ts",
+      "opencode.ts",
+      "process.ts",
+      "types.ts",
+    ])
   })
 
   test.each(ADAPTERS)("%s never passes an auto-approve flag", (path) => {

@@ -10,8 +10,9 @@ Verified against opencode `2.3.2`.
 ## What chert needs
 
 1. The `opencode` CLI on `PATH` (`opencode --version` must work).
-2. A model configured for opencode. chert passes no model and no API key; it
-   uses whatever opencode already uses.
+2. A model. chert uses opencode's own default until you pin one with
+   `/connect opencode <model>`; a pin adds `--model <provider/model>` to every
+   call. The pin is checked with one real call before it is saved.
 3. A session in the same project directory. opencode records a session's
    `directory` per project, and `opencode session list` only returns sessions for
    the current project, so run chert from the repository root (or a subfolder;
@@ -22,7 +23,7 @@ Verified against opencode `2.3.2`.
 Nothing to start. Every call is a plain `opencode run`:
 
 ```
-opencode run --format json --agent plan …        # + --session / --fork as needed
+opencode run --format json --agent plan …        # + --model when pinned, + --session / --fork as needed
 ```
 
 The CLI talks to its own background service (that is opencode's default; a
@@ -37,6 +38,24 @@ Start a review in chert:
 /walk <id>       # fork a specific session
 /walk fresh      # no author context; still a guided review
 ```
+
+## Pin a model
+
+opencode's remembered default can name a provider that is not authenticated, so
+pin a model explicitly:
+
+```
+/models opencode              # built-in opencode/* models are listed first
+/models opencode claude       # filter the list
+/connect opencode opencode/big-pickle
+```
+
+`/connect opencode <model>` runs one real call with `--model <model>` and saves
+the pin only if it answers. A failure reports the harness message plus a
+concrete `try /connect opencode <model>` drawn from `opencode models`; the failed
+model is not saved. `/connect opencode` activates opencode and reuses the saved
+pin, `/use opencode <model>` switches without the probe, and
+`/disconnect opencode` forgets the pin and returns to opencode's default.
 
 ## Explicit: attach to a server you run
 
@@ -56,7 +75,7 @@ bun dev
 With `CHERT_OPENCODE_SERVER` set, every call becomes:
 
 ```
-opencode run --format json --agent plan --server http://127.0.0.1:4096 …
+opencode run --format json --agent plan --server http://127.0.0.1:4096 …   # + --model when pinned
 ```
 
 `CHERT_OPENCODE_SERVER` accepts a full URL or a bare `host:port`; chert adds
@@ -95,6 +114,7 @@ opencode --version
 opencode session list --format json --max-count 1
 
 # 3. the exact call shape chert uses (fresh session, read-only agent)
+#    add --model <provider/model> when a model is pinned
 opencode run --format json --agent plan "Reply with exactly: CONNECTED"
 
 # 4. fork that session (replace the id)
@@ -107,6 +127,10 @@ order, and the done screen shows the forked session id.
 
 ## Gotchas
 
+- **Listing is not authentication.** `opencode models` lists ids even when the
+  provider behind one has no credentials, which is why `/connect opencode <model>`
+  probes before saving. The pin is passed to `/walk`, plain prompts, and the
+  probe itself.
 - **No `--attach`.** opencode 2.x uses `--server <url>` for an explicit server;
   `--attach` is rejected as an unknown flag.
 - **Password is per server.** A standalone server is not authenticated by

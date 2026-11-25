@@ -74,8 +74,9 @@ Other:
 
 The `>` row at the bottom is the universal entry point (Claude Code-style):
 `/` runs commands, plain text talks to the [opencode](https://opencode.ai) agent
-in the current project directory (opencode must be installed and configured with
-a model; chert needs no API keys).
+in the current project directory. opencode must be installed; chert needs no API
+keys. Pin a model once with `/connect opencode <model>` (or let opencode use its
+own default).
 
 By default chert calls the `opencode` CLI and lets it use its own background
 service, so there is nothing to start. To use a server you run yourself (one
@@ -114,10 +115,10 @@ See [docs/opencode.md](docs/opencode.md) for the session/fork details.
 | /export                                                       | export review notes to markdown              |
 | /review [working\|staged\|branch [base]\|last\|commit <ref>]  | what to review                               |
 | /walk [session-id\|fresh]                                     | guided review: an agent walks you through each file|
-| /connect [provider [key]]                                     | connector status / save a provider key       |
-| /disconnect <provider>                                        | remove a saved provider key                  |
+| /connect [connector [key\|model]]                             | connector status / save a key / pin an opencode model|
+| /disconnect <connector>                                       | remove a saved key or an opencode model pin  |
 | /use <connector> [model]                                      | route plain-text prompts (opencode or a provider)|
-| /models [provider]                                            | list a provider's models                     |
+| /models [connector] [filter]                                  | list a provider's or opencode's models       |
 | /themes [name]                                                | list or switch color theme                   |
 | /quit                                                         | exit chert (Ctrl+C also works)               |
 <!-- commands:end -->
@@ -143,8 +144,21 @@ Writes are atomic (temp file + rename), so a crash cannot leave a truncated file
 
 ## Connectors (bring your own model)
 
-Plain-text prompts go to the opencode agent by default. `/connect` adds direct
-provider support — all four use OpenAI-compatible APIs:
+Plain-text prompts go to the opencode agent by default. `/connect` lists it with
+the direct API providers, which all use OpenAI-compatible APIs:
+
+- `opencode` — the local CLI, no key. `/connect opencode <model>` makes one real
+  call with that model and saves it only if it answers; `/connect opencode` then
+  switches back to it with the saved pin. `/models opencode` lists the built-in
+  `opencode/*` models first.
+- `/connect <id> <key>` — save a provider key to `~/.chert/connectors.json`
+  (chmod 600), or just export the env var
+- `/use <id> [model]` — route plain-text prompts to a provider; `/use opencode`
+  switches back to the local CLI with its saved model
+- `/models <id> [filter]` — list a provider's or opencode's models
+- `/themes [name]` — list or switch color theme (default, dark-contrast, whiteout, github)
+- `/home` — open the menu
+- `/disconnect <id>` — remove a saved key or opencode's model pin
 
 | provider      | id                     | key env var          | default model                 |
 | ------------- | ---------------------- | -------------------- | ----------------------------- |
@@ -152,16 +166,6 @@ provider support — all four use OpenAI-compatible APIs:
 | Google Gemini | `gemini`               | `GEMINI_API_KEY`     | `gemini-2.5-flash`            |
 | Groq          | `groq`                 | `GROQ_API_KEY`       | `llama-3.3-70b-versatile`     |
 | NVIDIA NIM    | `nim` (alias `nvidia`) | `NVIDIA_API_KEY`     | `meta/llama-3.3-70b-instruct` |
-
-- `/connect` — status of every connector (key source, model, active)
-- `/connect <id> <key>` — save a key to `~/.chert/connectors.json` (chmod 600),
-  or just export the env var
-- `/use <id> [model]` — route plain-text prompts to a provider; `/use opencode`
-  switches back to the local CLI
-- `/models <id>` — list a provider's models
-- `/themes [name]` — list or switch color theme (default, dark-contrast, whiteout, github)
-- `/home` — open the menu
-- `/disconnect <id>` — remove a saved key
 
 ## Build a standalone executable
 

@@ -14,7 +14,7 @@ import type { ReviewSource } from "../git"
 import type { ReviewFile } from "../git"
 import { buildTreeLines } from "../tree"
 import type { TreeLine } from "../tree"
-import { PROVIDERS, findProvider, getActive, keySource } from "../connectors"
+import { PROVIDERS, findProvider, getActive, keySource, storedModel } from "../connectors"
 import { displayPath, loadRecent, openProject, resolveProjectRoot } from "../projects"
 import { bestEffort, tryOr } from "../best-effort"
 import { MAX_SAVED_HIGHLIGHTS } from "../limits"
@@ -76,6 +76,7 @@ import type { AskResponse, PlanResponse } from "../review/protocol"
 import type { HarnessAdapter } from "../harness/types"
 import { createClaudeHarness } from "../harness/claude"
 import { createOpencodeHarness } from "../harness/opencode"
+import { probeVersion } from "../harness/process"
 import { walkCommand } from "./commands/walk"
 
 // ---------------------------------------------------------------------------
@@ -219,7 +220,12 @@ export function ReviewApp(props: ReviewAppProps = {}) {
 
   const activeLabel = createMemo(() => {
     const active = connector()
-    if (active === "opencode") return "opencode"
+    if (active === "opencode") {
+      const pinned = model()
+      if (pinned === undefined) return "opencode/default"
+      // Built-in ids already carry the connector's name; provider ids do not.
+      return pinned.startsWith("opencode/") ? pinned : `opencode/${pinned}`
+    }
     const provider = findProvider(active)
     return provider ? `${provider.id}/${model() ?? provider.defaultModel}` : active
   })
@@ -318,19 +324,27 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   // Panels float over the review; they never replace it.
 
   function connectorsStatus(): string {
+    const openActive = connector() === "opencode"
+    const openModel = (openActive ? model() : storedModel("opencode")) ?? "default"
+    const openVersion = probeVersion("opencode") ?? "not installed"
     const lines = [
       "connectors:",
-      `  opencode     ${connector() === "opencode" ? "← active" : ""}  local opencode CLI (no key needed)`,
+      `  ${"opencode".padEnd(12)} ${openVersion}  local CLI · ${openModel} · no key needed${openActive ? "  ← active" : ""}`,
     ]
     for (const provider of PROVIDERS) {
       const source = keySource(provider.id)
       const isActive = connector() === provider.id
-      const useModel = isActive ? (model() ?? provider.defaultModel) : provider.defaultModel
+      const useModel = isActive
+        ? (model() ?? provider.defaultModel)
+        : (storedModel(provider.id) ?? provider.defaultModel)
       lines.push(
         `  ${provider.id.padEnd(12)} ${source === undefined ? "✗ no key" : `✓ key: ${source}`}   ${provider.label} · ${useModel}${isActive ? "  ← active" : ""}`,
       )
     }
-    lines.push("save a key: /connect <provider> <key>   ·   switch: /use <connector> [model]")
+    lines.push(
+      "pin a model: /connect opencode <model>   ·   save a key: /connect <provider> <key>",
+      "switch: /use <connector> [model]   ·   list models: /models <connector>",
+    )
     return lines.join("\n")
   }
 
@@ -743,7 +757,11 @@ export function ReviewApp(props: ReviewAppProps = {}) {
    * answer is null. opencode counts as usable only with its server running.
    */
   async function chooseHarness(): Promise<{ harness: HarnessAdapter | null; reason: string }> {
-    const opencode = createOpencodeHarness()
+    // The walk is opencode's, so it uses opencode's pin even when another
+    // connector is active. The chosen model rides on the adapter: opencode gets
+    // --model, and a refused model is reported with the fix, not bare stderr.
+    const openModel = connector() === "opencode" ? model() : storedModel("opencode")
+    const opencode = createOpencodeHarness({ model: openModel })
     const found = await opencode.detect()
     if (found.available) return { harness: opencode, reason: "" }
     const claude = createClaudeHarness()

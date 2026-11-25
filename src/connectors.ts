@@ -68,6 +68,8 @@ export function findProvider(idOrAlias: string): ProviderDef | undefined {
 interface StoredConfig {
   providers?: Record<string, { key?: string }>
   active?: { connector: string; model?: string }
+  /** The last model chosen per connector, so switching back reuses it. */
+  models?: Record<string, string>
 }
 
 function configFile(): string {
@@ -132,21 +134,66 @@ export function clearProviderKey(providerId: string): void {
 // Active connector
 // ---------------------------------------------------------------------------
 
-export function getActive(): { connector: string; model?: string } {
-  const stored = loadConfig().active
-  if (
-    stored !== undefined &&
-    (stored.connector === "opencode" || findProvider(stored.connector) !== undefined)
-  ) {
-    return stored
-  }
-  return { connector: "opencode" }
+export interface ActiveConnector {
+  connector: string
+  model?: string
 }
 
-export function setActive(connector: string, model?: string): void {
+/** The active connector, with the model last chosen for it. */
+export function getActive(): ActiveConnector {
   const config = loadConfig()
-  config.active = { connector, ...(model !== undefined && model !== "" ? { model } : {}) }
+  const stored = config.active
+  const connector =
+    stored !== undefined && (stored.connector === "opencode" || findProvider(stored.connector) !== undefined)
+      ? stored.connector
+      : "opencode"
+  // A model from a connector that is no longer active does not apply here.
+  const legacy = stored?.connector === connector ? stored.model : undefined
+  const model = config.models?.[connector] ?? legacy
+  return model === undefined ? { connector } : { connector, model }
+}
+
+/** Switch connector, remembering `model` for the next time it is chosen. */
+export function setActive(connector: string, model?: string): ActiveConnector {
+  const config = loadConfig()
+  const models = { ...config.models }
+  // A model written before per-connector storage belongs to the connector that
+  // was active; keep it when switching away so switching back finds it.
+  const previous = config.active
+  if (previous?.model !== undefined && models[previous.connector] === undefined) {
+    models[previous.connector] = previous.model
+  }
+  const trimmed = model?.trim()
+  if (trimmed !== undefined && trimmed !== "") models[connector] = trimmed
+  const resolved = models[connector]
+  config.models = Object.keys(models).length > 0 ? models : undefined
+  config.active = { connector, ...(resolved !== undefined ? { model: resolved } : {}) }
   saveConfig(config)
+  return resolved === undefined ? { connector } : { connector, model: resolved }
+}
+
+/** The model remembered for a connector, even when it is not active. */
+export function storedModel(connector: string): string | undefined {
+  const config = loadConfig()
+  const remembered = config.models?.[connector]
+  if (remembered !== undefined) return remembered
+  // Fall back to the single-model format written by older versions.
+  return config.active?.connector === connector ? config.active.model : undefined
+}
+
+/** Forget a connector's model; returns whether there was one to forget. */
+export function clearConnectorModel(connector: string): boolean {
+  const config = loadConfig()
+  const hadStored = config.models?.[connector] !== undefined
+  const hadActive = config.active?.connector === connector && config.active.model !== undefined
+  if (!hadStored && !hadActive) return false
+  if (config.models !== undefined) {
+    delete config.models[connector]
+    if (Object.keys(config.models).length === 0) config.models = undefined
+  }
+  if (config.active?.connector === connector) delete config.active.model
+  saveConfig(config)
+  return true
 }
 
 // ---------------------------------------------------------------------------
