@@ -53,7 +53,7 @@ export function SuggestionBox(props: SuggestionBoxProps) {
             pal() ? (active() ? pal()!.text : pal()!.dim) : active() ? COLORS().text : COLORS().dim
           return (
             <box height={1} flexDirection="row" backgroundColor={bg()}>
-              <text fg={labelFg()}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(28)}</text>
+              <text fg={labelFg()}>{`${active() ? "▸ " : "  "}${cmd.label}`.padEnd(36)}</text>
               <text fg={descFg()}>{cmd.description}</text>
             </box>
           )

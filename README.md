@@ -110,11 +110,11 @@ See [docs/opencode.md](docs/opencode.md) for the session/fork details.
 | /forget <name or path>                                        | remove a saved project                       |
 | /cwd                                                          | show the current project                     |
 | /tree                                                         | show the whole project tree                  |
-| /log                                                          | show chat history                            |
+| /log                                                          | show this session's log                      |
 | /highlights [clear [yes]]                                     | list or clear highlights                     |
 | /export                                                       | export review notes to markdown              |
 | /review [working\|staged\|branch [base]\|last\|commit <ref>]  | what to review                               |
-| /walk [session-id\|fresh]                                     | guided review: an agent walks you through each file|
+| /walk [opencode [model]\|fresh\|session-id]                   | guided review: an agent walks you through each file|
 | /connect [connector [key\|model]]                             | connector status / save a key / pin an opencode model|
 | /disconnect <connector>                                       | remove a saved key or an opencode model pin  |
 | /use <connector> [model]                                      | route plain-text prompts (opencode or a provider)|

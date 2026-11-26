@@ -37,6 +37,7 @@ Start a review in chert:
 /walk            # fork the newest session opencode lists for this project
 /walk <id>       # fork a specific session
 /walk fresh      # no author context; still a guided review
+/walk opencode [model]  # name the harness; override the pin for this walk
 ```
 
 ## Pin a model
@@ -56,6 +57,7 @@ concrete `try /connect opencode <model>` drawn from `opencode models`; the faile
 model is not saved. `/connect opencode` activates opencode and reuses the saved
 pin, `/use opencode <model>` switches without the probe, and
 `/disconnect opencode` forgets the pin and returns to opencode's default.
+`/walk opencode <model>` uses a model for one walk without changing the pin.
 
 ## Explicit: attach to a server you run
 

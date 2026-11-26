@@ -53,6 +53,8 @@ export interface KeyboardContext {
   submit(): void
   themeInput(): string | null
   themeSuggestions(): Suggestion[]
+  /** Text after `/walk `, or null when the prompt is not a walk argument. */
+  walkInput(): string | null
   cdMatches(): string[] | null
   runCommand(line: string): void
 
@@ -230,6 +232,13 @@ export function handleKeyPress(ctx: KeyboardContext, key: KeyPress): void {
       return
     }
     if (ctx.themeInput() !== null && ctx.visibleSuggestions().length > 0) {
+      ctx.acceptSuggestion(
+        ctx.visibleSuggestions()[Math.min(ctx.suggestionIndex(), ctx.visibleSuggestions().length - 1)],
+      )
+      ctx.submit()
+      return
+    }
+    if (ctx.walkInput() !== null && ctx.visibleSuggestions().length > 0) {
       ctx.acceptSuggestion(
         ctx.visibleSuggestions()[Math.min(ctx.suggestionIndex(), ctx.visibleSuggestions().length - 1)],
       )

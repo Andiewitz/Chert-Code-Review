@@ -35,7 +35,7 @@ export const COMMAND_DEFS: CommandDef[] = [
   { name: "forget", usage: "/forget <name or path>", description: "remove a saved project", takesArg: true },
   { name: "cwd", usage: "/cwd", description: "show the current project" },
   { name: "tree", usage: "/tree", description: "show the whole project tree" },
-  { name: "log", usage: "/log", description: "show chat history" },
+  { name: "log", usage: "/log", description: "show this session's log" },
   {
     name: "highlights",
     usage: "/highlights [clear [yes]]",
@@ -51,7 +51,7 @@ export const COMMAND_DEFS: CommandDef[] = [
   },
   {
     name: "walk",
-    usage: "/walk [session-id|fresh]",
+    usage: "/walk [opencode [model]|fresh|session-id]",
     description: "guided review: an agent walks you through each file",
     takesArg: true,
   },

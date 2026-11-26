@@ -76,8 +76,10 @@ import type { AskResponse, PlanResponse } from "../review/protocol"
 import type { HarnessAdapter } from "../harness/types"
 import { createClaudeHarness } from "../harness/claude"
 import { createOpencodeHarness } from "../harness/opencode"
+import { recommendOpencodeModel } from "../harness/opencode-models"
 import { probeVersion } from "../harness/process"
-import { walkCommand } from "./commands/walk"
+import { parseWalkArg, walkCommand } from "./commands/walk"
+import type { WalkRequest } from "./commands/walk"
 
 // ---------------------------------------------------------------------------
 // UI
@@ -456,6 +458,72 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     return allThemeTargets().filter((s) => matches(s.label) || matches(s.description) || matches(s.key))
   })
 
+  // /walk takes a session id, `fresh`, or `opencode [model]`. Model rows come
+  // from opencode's own list; the first row uses the saved pin. Listing spawns
+  // the CLI, so keep one result for the life of this screen.
+  let walkModelCache: string[] | null = null
+  function walkModels(): string[] {
+    if (walkModelCache === null) {
+      walkModelCache = tryOr(() => createOpencodeHarness().listModels?.() ?? [], [])
+    }
+    return walkModelCache
+  }
+
+  function opencodePin(): string | undefined {
+    return connector() === "opencode" ? model() : storedModel("opencode")
+  }
+
+  const walkInput = createMemo(() => {
+    const v = inputValue()
+    if (!v.toLowerCase().startsWith("/walk ")) return null
+    return v.slice("/walk ".length)
+  })
+
+  const walkSuggestions = createMemo(() => {
+    const raw = walkInput()
+    if (raw === null) return [] as Suggestion[]
+    const pin = opencodePin()
+    const model = pin ?? recommendOpencodeModel(walkModels())
+    const opencodeRow: Suggestion = {
+      key: "walk-opencode",
+      label: `/walk opencode ${model ?? "(default)"}`,
+      description: pin
+        ? "walk with opencode using the saved pin"
+        : model === undefined
+          ? "walk with opencode's default model"
+          : "walk with a recommended opencode model",
+      insert: model === undefined ? "/walk opencode" : `/walk opencode ${model}`,
+    }
+    const freshRow: Suggestion = {
+      key: "walk-fresh",
+      label: "/walk fresh",
+      description: "no author context; still a guided review",
+      insert: "/walk fresh",
+    }
+
+    const trimmed = raw.trim()
+    const lower = trimmed.toLowerCase()
+    if (raw.toLowerCase().startsWith("opencode ")) {
+      const needle = raw.slice("opencode ".length).trim().toLowerCase()
+      const rows: Suggestion[] = []
+      if (pin !== undefined && pin.toLowerCase().includes(needle)) rows.push(opencodeRow)
+      for (const id of walkModels()) {
+        if (!id.toLowerCase().includes(needle)) continue
+        rows.push({
+          key: id,
+          label: `/walk opencode ${id}`,
+          description: "this walk only; pin it with /connect",
+          insert: `/walk opencode ${id}`,
+        })
+        if (rows.length === 8) break
+      }
+      const seen = new Set<string>()
+      return rows.filter((s) => (seen.has(s.insert) ? false : (seen.add(s.insert), true)))
+    }
+
+    return [opencodeRow, freshRow].filter((s) => lower === "" || s.label.toLowerCase().includes(lower))
+  })
+
   const filteredCommands = createMemo(() => {
     const q = commandQuery()
     if (q === null) return [] as Suggestion[]
@@ -468,6 +536,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const visibleSuggestions = createMemo(() => {
     if (pickerOpen()) return COMMAND_DEFS.map(commandToSuggestion)
     if (themeInput() !== null) return themeSuggestions()
+    if (walkInput() !== null) return walkSuggestions()
     return filteredCommands()
   })
 
@@ -755,15 +824,22 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   /**
    * The first harness that can be used now, and why none could when the
    * answer is null. opencode counts as usable only with its server running.
+   * An explicit `/walk opencode …` never falls back to Claude.
    */
-  async function chooseHarness(): Promise<{ harness: HarnessAdapter | null; reason: string }> {
+  async function chooseHarness(
+    modelOverride?: string,
+    onlyOpencode = false,
+  ): Promise<{ harness: HarnessAdapter | null; reason: string }> {
     // The walk is opencode's, so it uses opencode's pin even when another
     // connector is active. The chosen model rides on the adapter: opencode gets
     // --model, and a refused model is reported with the fix, not bare stderr.
-    const openModel = connector() === "opencode" ? model() : storedModel("opencode")
+    const openModel = modelOverride ?? (connector() === "opencode" ? model() : storedModel("opencode"))
     const opencode = createOpencodeHarness({ model: openModel })
     const found = await opencode.detect()
     if (found.available) return { harness: opencode, reason: "" }
+    if (onlyOpencode) {
+      return { harness: null, reason: found.reason ?? "opencode is not available." }
+    }
     const claude = createClaudeHarness()
     const claudeFound = await claude.detect()
     if (claudeFound.available) return { harness: claude, reason: "" }
@@ -893,9 +969,9 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   }
 
   /** An explicit session id, `fresh` for none, else the project's newest. */
-  function walkBaseSession(harness: HarnessAdapter, arg: string): string | undefined {
-    if (arg === "fresh") return undefined
-    if (arg !== "") return arg
+  function walkBaseSession(harness: HarnessAdapter, request: WalkRequest): string | undefined {
+    if (request.fresh === true) return undefined
+    if (request.sessionId !== undefined) return request.sessionId
     return harness.listSessions(cwd())[0]?.id
   }
 
@@ -942,7 +1018,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   /**
    * /walk: fork a harness session and let it narrate each changed file. With
    * no argument the newest session for this project is used, `fresh` starts
-   * without author context, and anything else is a session id.
+   * without author context, `opencode [model]` names the harness and can
+   * override the model for this walk, and anything else is a session id.
    */
   async function startWalk(arg: string): Promise<void> {
     const list = files() ?? []
@@ -950,19 +1027,22 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       showError("Nothing to walk through: no changed files in this review.")
       return
     }
-    const choice = await chooseHarness()
+    const request = parseWalkArg(arg)
+    const choice = await chooseHarness(request.model, request.harness === "opencode")
     if (choice.harness === null) {
       showError(`${choice.reason} Then run /walk again.`)
       return
     }
     const harness = choice.harness
-    const baseSessionId = walkBaseSession(harness, arg)
+    const baseSessionId = walkBaseSession(harness, request)
+    const openModel = request.model ?? (connector() === "opencode" ? model() : storedModel("opencode"))
+    const modelNote = harness.id === "opencode" && openModel !== undefined ? ` · model ${openModel}` : ""
     stopWalk()
     addEntry(
       "system",
       baseSessionId === undefined
-        ? `No author session to fork; starting a fresh ${harness.label} session.`
-        : `Forking ${harness.label} session ${baseSessionId}.`,
+        ? `No author session to fork; starting a fresh ${harness.label} session${modelNote}.`
+        : `Forking ${harness.label} session ${baseSessionId}${modelNote}.`,
     )
     setView("review")
     walk = beginWalk(harness, list, baseSessionId)
@@ -1031,7 +1111,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
   const menuOptions = createMemo<SelectOption[]>(() => [
     { name: "Walk through with agent", description: "fork the author's session", value: 0 },
     { name: "Browse files", description: "every file in the project", value: 1 },
-    { name: "Chat history", description: "past questions and answers", value: 2 },
+    { name: "Session log", description: "this session's messages and output", value: 2 },
     { name: "Recent projects", description: "switch to another project", value: 3 },
     { name: "Refresh changes", description: "re-scan the working tree", value: 4 },
     { name: "Change review source", description: "staged, branch, or a commit", value: 5 },
@@ -1291,7 +1371,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       hasSuggestions: () =>
         pickerOpen() ||
         (commandQuery() !== null && filteredCommands().length > 0) ||
-        (themeInput() !== null && themeSuggestions().length > 0),
+        (themeInput() !== null && themeSuggestions().length > 0) ||
+        (walkInput() !== null && walkSuggestions().length > 0),
       actionCount: () => actionLabels().length,
 
       reviewPickerOpen,
@@ -1306,6 +1387,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
       setSuggestionIndex,
       visibleSuggestions,
       acceptSuggestion,
+      walkInput,
       setPromptValue,
       clearInput,
       submit,
@@ -1372,7 +1454,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         if (hasProject()) loadTree()
         else setView("tree")
         return
-      case 2: // Chat history
+      case 2: // Session log
         setMenuOpen(false)
         setView("log")
         return
@@ -1518,7 +1600,7 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const verb = currentApproved() ? "unapprove" : "approve"
     if (suggestionWindow().show) {
       return pickerOpen()
-        ? "↑↓ choose · Enter run · Esc close · Ctrl+C quit"
+        ? "↑↓ choose · Enter insert · Esc close · Ctrl+C quit"
         : "↑↓ choose · Enter run · Esc clear · Ctrl+C quit"
     }
     if (hasText) return "Enter send · Esc clear · Ctrl+C quit"
@@ -1719,7 +1801,8 @@ export function ReviewApp(props: ReviewAppProps = {}) {
     const show =
       pickerOpen() ||
       (commandQuery() !== null && list.length > 0) ||
-      (themeInput() !== null && list.length > 0)
+      (themeInput() !== null && list.length > 0) ||
+      (walkInput() !== null && list.length > 0)
     if (!show) return { items: [] as Suggestion[], offset: 0, show: false }
     const max = 8
     const idx = Math.min(suggestionIndex(), Math.max(0, list.length - 1))
@@ -1736,7 +1819,9 @@ export function ReviewApp(props: ReviewAppProps = {}) {
         <text fg={COLORS().dim} attributes={ATTR.dim}>
           {hasProject() && (view() === "review" || view() === "done")
             ? `${sourceLabel()}${walkActive() ? " · walk" : ""}`
-            : " "}
+            : view() === "log"
+              ? "session log"
+              : " "}
         </text>
         <box flexGrow={1} />
         <text fg={COLORS().purpleBright} attributes={ATTR.dim}>

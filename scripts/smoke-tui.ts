@@ -611,6 +611,10 @@ if (args[0] === "session") {
   console.log(JSON.stringify([{ id: "ses_author", title: "wrote a2", updated: 2000 }]))
   process.exit(0)
 }
+if (args[0] === "models") {
+  console.log("opencode/big-pickle\\nopencode/beam-free")
+  process.exit(0)
+}
 // chert must use the configured server, not start a private backend.
 if (!args.includes("--server")) {
   console.error("chert called opencode without --server")
@@ -696,7 +700,13 @@ async function phaseWalkTests(): Promise<void> {
     const setup = await render(ReviewApp, { width: 100, height: 50 })
     try {
       await setup.renderOnce()
-      await setup.mockInput.pressKeys("/walk".split(""))
+      await setup.mockInput.pressKeys("/walk ".split(""))
+      await setup.renderOnce()
+      {
+        const frame = setup.captureCharFrame()
+        assert(frame.includes("/walk opencode"), "typing /walk shows the opencode model suggestion")
+        assert(frame.includes("/walk fresh"), "typing /walk shows the fresh option")
+      }
       await setup.mockInput.pressKey("RETURN")
       await new Promise((r) => setTimeout(r, 1500))
       await setup.renderOnce()
@@ -907,6 +917,8 @@ async function main(): Promise<void> {
     frame = setup.captureCharFrame()
     assert(frame.includes("Menu"), "Esc opens the menu")
     assert(frame.includes("Walk through with agent"), "menu rows are listed")
+    assert(frame.includes("Session log"), "the menu offers the real session log")
+    assert(!frame.includes("Chat history"), "the menu no longer promises a chat history browser")
     assert(frame.includes("Files (3)"), "the review stays visible under the menu")
     assert(
       frame.split("\n").findIndex((line) => line.includes("Menu")) > 10,
@@ -924,6 +936,7 @@ async function main(): Promise<void> {
     await setup.renderOnce()
     frame = setup.captureCharFrame()
     assert(frame.includes("chert-e2e-ok"), "/run output appears in the log view")
+    assert(frame.includes("session log"), "the log view is labelled as the session log")
 
     // /refresh rescans and reports the count.
     await setup.mockInput.pressKeys("/refresh".split(""))
@@ -1016,6 +1029,22 @@ async function main(): Promise<void> {
     await setup.renderOnce()
     frame = setup.captureCharFrame()
     assert(frame.includes("[ opencode/big-pickle ]"), "/connect opencode restores the saved pin")
+
+    // /walk suggestions source the saved pin, and `opencode ` lists models.
+    await setup.mockInput.pressKeys("/walk ".split(""))
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(frame.includes("/walk opencode opencode/big-pickle"), "/walk suggests the saved pin")
+    await setup.mockInput.pressEscape()
+    await new Promise((r) => setTimeout(r, 60))
+    await setup.renderOnce()
+    await setup.mockInput.pressKeys("/walk opencode ".split(""))
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    assert(frame.includes("/walk opencode opencode/beam-free"), "/walk opencode lists models")
+    await setup.mockInput.pressEscape()
+    await new Promise((r) => setTimeout(r, 60))
+    await setup.renderOnce()
 
     // Disconnect clears it and the header falls back to the default.
     await setup.mockInput.pressKeys("/disconnect opencode".split(""))

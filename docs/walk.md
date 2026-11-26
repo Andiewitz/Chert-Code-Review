@@ -26,9 +26,9 @@ one at a time. The agent explains and flags; you decide.
 ## Not building
 
 Auto-fix or write access for the reviewer, GitHub/PR integration, multi-reviewer,
-a chat history browser, new LLM providers, per-file prompt configuration,
-settings screens, telemetry. The direct-API connectors keep serving plain-text
-prompts; `/walk` requires a harness.
+a persistent chat-history browser, new LLM providers, per-file prompt
+configuration, settings screens, telemetry. The direct-API connectors keep
+serving plain-text prompts; `/walk` requires a harness.
 
 ## Harnesses
 
@@ -64,8 +64,10 @@ skip-permissions flag; `bun run check` fails if one appears.
 `/walk` forks the newest session opencode lists for this project. `/walk <id>`
 forks a session you name; `/walk fresh` starts without author context. Claude
 Code has no session-list command, so there it is `/walk <id>` or `/walk fresh`.
-Nothing is forked until you run the command: no review work happens in the
-background.
+`/walk opencode [model]` names the harness and can override opencode's saved pin
+for that walk only; the pin itself is unchanged. Typing `/walk ` shows the
+opencode model and `fresh` as suggestions. Nothing is forked until you run the
+command: no review work happens in the background.
 
 A run that exits nonzero but printed a usable answer is still an answer: the CLI
 reports some warnings that way, and chert keeps the text instead of failing the
